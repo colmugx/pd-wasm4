@@ -52,6 +52,9 @@ if (TOOLCHAIN STREQUAL "armgcc")
         ${PLAYDATE_GAME_DEVICE}
         src/main.c
         src/wamr_bridge.c
+        third_party/wasm4-core/apu.c
+        third_party/wasm4-core/framebuffer.c
+        third_party/wasm4-core/util.c
         ${WAMR_RUNTIME_LIB_SOURCE}
     )
 else()
@@ -60,6 +63,9 @@ else()
         SHARED
         src/main.c
         src/wamr_bridge.c
+        third_party/wasm4-core/apu.c
+        third_party/wasm4-core/framebuffer.c
+        third_party/wasm4-core/util.c
         ${WAMR_RUNTIME_LIB_SOURCE}
     )
 endif()
@@ -75,6 +81,7 @@ endif()
 target_include_directories(${TARGET_NAME} PUBLIC
     ${SDK}/C_API
     ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/wasm4-core
     ${WAMR_ROOT_DIR}/core/iwasm/include
 )
 
