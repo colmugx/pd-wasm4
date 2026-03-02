@@ -1,0 +1,5 @@
+name=PlaydateWAMR
+author=colmugx
+description=WAMR cartridge loader demo (simulator)
+bundleID=com.colmugx.playdatewamr
+imagePath=

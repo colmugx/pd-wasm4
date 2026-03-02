@@ -1,0 +1,7 @@
+build/
+*.pdx
+Source/pdex.*
+.DS_Store
+
+skills
+third_party
