@@ -1,4 +1,4 @@
-# Playdate WAMR Architecture
+# PLAYDATE WASM-4 Architecture
 
 ## Overview
 

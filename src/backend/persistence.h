@@ -1,5 +1,5 @@
-#ifndef PLAYDATE_WAMR_PERSISTENCE_H
-#define PLAYDATE_WAMR_PERSISTENCE_H
+#ifndef PLAYDATE_WASM4_PERSISTENCE_H
+#define PLAYDATE_WASM4_PERSISTENCE_H
 
 #include <stdbool.h>
 #include <stddef.h>

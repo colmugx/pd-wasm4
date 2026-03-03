@@ -15,7 +15,7 @@
 ## Build, Test, and Development Commands
 - `cmake -S . -B build`: Configure the project (requires Playdate SDK path via `PLAYDATE_SDK_PATH` or `~/.Playdate/config`).
 - `cmake --build build`: Compile host code and regenerate the `.pdx` package.
-- `open -a "~/Playdate/bin/Playdate Simulator.app" "/absolute/path/to/playdate_wamr.pdx"`: Launch in simulator.
+- `open -a "~/Playdate/bin/Playdate Simulator.app" "/absolute/path/to/playdate-wasm-4.pdx"`: Launch in simulator.
 - AOT conversion: `./scripts/build_aot.sh <cart_dir>` converts all `*.wasm` in the target directory to same-stem `*.aot`.
 - Fast loop for cartridge changes: put cartridges in `Data/<bundleID>/cart/`, then trigger rescan in-app.
 

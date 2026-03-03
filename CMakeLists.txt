@@ -22,8 +22,8 @@ endif()
 set(CMAKE_CONFIGURATION_TYPES "Debug;Release")
 set(CMAKE_XCODE_GENERATE_SCHEME TRUE)
 
-set(PLAYDATE_GAME_NAME playdate_wamr)
-set(PLAYDATE_GAME_DEVICE playdate_wamr_DEVICE)
+set(PLAYDATE_GAME_NAME playdate-wasm-4)
+set(PLAYDATE_GAME_DEVICE playdate-wasm-4-device)
 set(PRODUCT_DIR ${CMAKE_CURRENT_SOURCE_DIR} CACHE STRING "Built PDX directory")
 
 project(${PLAYDATE_GAME_NAME} C ASM)

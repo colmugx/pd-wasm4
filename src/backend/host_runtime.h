@@ -1,5 +1,5 @@
-#ifndef PLAYDATE_WAMR_HOST_RUNTIME_H
-#define PLAYDATE_WAMR_HOST_RUNTIME_H
+#ifndef PLAYDATE_WASM4_HOST_RUNTIME_H
+#define PLAYDATE_WASM4_HOST_RUNTIME_H
 
 #include <stdbool.h>
 #include <stdint.h>

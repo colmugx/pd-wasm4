@@ -1,5 +1,5 @@
-#ifndef PLAYDATE_WAMR_GAME_BACKEND_H
-#define PLAYDATE_WAMR_GAME_BACKEND_H
+#ifndef PLAYDATE_WASM4_GAME_BACKEND_H
+#define PLAYDATE_WASM4_GAME_BACKEND_H
 
 #include <stdbool.h>
 #include <stddef.h>

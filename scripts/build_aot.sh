@@ -2,12 +2,33 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CART_DIR="${ROOT_DIR}/Source/cart"
 
+usage()
+{
+  cat <<'EOF'
+Usage:
+  ./scripts/build_aot.sh <cart_dir>
+
+Description:
+  Convert all .wasm files under <cart_dir> into same-stem .aot files.
+
+Example:
+  ./scripts/build_aot.sh /Users/you/Playdate/Disk/Data/top.colmugx.wasm4launcher/cart
+EOF
+}
+
+if [[ $# -ne 1 ]]; then
+  usage >&2
+  exit 1
+fi
+
+CART_DIR="$1"
 if [[ ! -d "${CART_DIR}" ]]; then
   echo "cart directory not found: ${CART_DIR}" >&2
   exit 1
 fi
+
+CART_DIR="$(cd "${CART_DIR}" && pwd)"
 
 WAMRC_BIN="${WAMRC_BIN:-}"
 if [[ -z "${WAMRC_BIN}" ]]; then
@@ -46,4 +67,4 @@ for wasm in "${wasm_files[@]}"; do
   "${cmd[@]}"
 done
 
-echo "AOT build complete."
+echo "AOT build complete for ${CART_DIR}."

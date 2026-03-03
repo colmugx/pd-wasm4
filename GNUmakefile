@@ -51,7 +51,7 @@ check-arm:
 
 clean:
 	rm -rf $(SIM_BUILD_DIR) $(DEVICE_BUILD_DIR) \
-		playdate_wamr.pdx playdate_wamr_DEVICE.pdx
+		playdate-wasm-4.pdx playdate-wasm-4-device.pdx
 
 distclean: clean
 	rm -rf CMakeFiles CMakeCache.txt cmake_install.cmake compile_commands.json Makefile

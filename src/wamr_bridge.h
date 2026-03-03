@@ -1,5 +1,5 @@
-#ifndef PLAYDATE_WAMR_BRIDGE_H
-#define PLAYDATE_WAMR_BRIDGE_H
+#ifndef PLAYDATE_WASM4_BRIDGE_H
+#define PLAYDATE_WASM4_BRIDGE_H
 
 #include "pd_api.h"
 

@@ -1,5 +1,5 @@
-#ifndef PLAYDATE_WAMR_INPUT_MAPPER_H
-#define PLAYDATE_WAMR_INPUT_MAPPER_H
+#ifndef PLAYDATE_WASM4_INPUT_MAPPER_H
+#define PLAYDATE_WASM4_INPUT_MAPPER_H
 
 #include <stdbool.h>
 #include <stdatomic.h>
