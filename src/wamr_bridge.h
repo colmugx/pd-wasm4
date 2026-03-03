@@ -9,4 +9,10 @@ wamr_bridge_init(PlaydateAPI *playdate);
 void
 wamr_bridge_shutdown(void);
 
+void
+wamr_bridge_on_pause(void);
+
+void
+wamr_bridge_on_resume(void);
+
 #endif

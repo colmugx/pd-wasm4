@@ -24,6 +24,7 @@ set(CMAKE_XCODE_GENERATE_SCHEME TRUE)
 
 set(PLAYDATE_GAME_NAME playdate_wamr)
 set(PLAYDATE_GAME_DEVICE playdate_wamr_DEVICE)
+set(PRODUCT_DIR ${CMAKE_CURRENT_SOURCE_DIR} CACHE STRING "Built PDX directory")
 
 project(${PLAYDATE_GAME_NAME} C ASM)
 
@@ -33,6 +34,11 @@ if (NOT EXISTS ${WAMR_ROOT_DIR}/build-scripts/runtime_lib.cmake)
 endif()
 
 string(TOLOWER ${CMAKE_HOST_SYSTEM_NAME} WAMR_BUILD_PLATFORM)
+if (TOOLCHAIN STREQUAL "armgcc")
+    set(WAMR_BUILD_TARGET "THUMB_VFP")
+    set(SHARED_PLATFORM_CONFIG
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/wamr_playdate_platform.cmake)
+endif()
 set(WAMR_BUILD_INTERP 1)
 set(WAMR_BUILD_FAST_INTERP 1)
 set(WAMR_BUILD_AOT 0)
@@ -70,12 +76,15 @@ else()
     )
 endif()
 
-include(${SDK}/C_API/buildsupport/playdate_game.cmake)
+include(${SDK}/C_API/buildsupport/playdate.cmake)
 
 if (TOOLCHAIN STREQUAL "armgcc")
     set(TARGET_NAME ${PLAYDATE_GAME_DEVICE})
+    set(PDX_PACKAGE_NAME ${PLAYDATE_GAME_DEVICE})
+    set_property(TARGET ${TARGET_NAME} PROPERTY OUTPUT_NAME "${PLAYDATE_GAME_DEVICE}.elf")
 else()
     set(TARGET_NAME ${PLAYDATE_GAME_NAME})
+    set(PDX_PACKAGE_NAME ${PLAYDATE_GAME_NAME})
 endif()
 
 target_include_directories(${TARGET_NAME} PUBLIC
@@ -88,3 +97,68 @@ target_include_directories(${TARGET_NAME} PUBLIC
 if (NOT MSVC)
     target_link_libraries(${TARGET_NAME} m)
 endif()
+
+set(STAGING_DIR ${CMAKE_CURRENT_BINARY_DIR}/staging)
+set(STAGING_SOURCE_DIR ${STAGING_DIR}/Source)
+
+if (TOOLCHAIN STREQUAL "armgcc")
+    set(PDEX_STAGE_FILE ${STAGING_SOURCE_DIR}/pdex.elf)
+else()
+    if (MSVC OR MINGW)
+        set(PDEX_EXT dll)
+    elseif(APPLE)
+        set(PDEX_EXT dylib)
+    elseif(UNIX)
+        set(PDEX_EXT so)
+    else()
+        message(FATAL_ERROR "Platform not supported!")
+    endif()
+    set(PDEX_STAGE_FILE ${STAGING_SOURCE_DIR}/pdex.${PDEX_EXT})
+endif()
+
+add_custom_command(TARGET ${TARGET_NAME} PRE_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${PRODUCT_DIR}
+)
+
+if (TOOLCHAIN STREQUAL "armgcc")
+    add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E rm -rf ${STAGING_SOURCE_DIR}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${STAGING_SOURCE_DIR}
+        COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/Source ${STAGING_SOURCE_DIR}
+        COMMAND ${CMAKE_COMMAND} -E rm -f
+            ${STAGING_SOURCE_DIR}/pdex.bin
+            ${STAGING_SOURCE_DIR}/pdex.elf
+            ${STAGING_SOURCE_DIR}/pdex.dylib
+            ${STAGING_SOURCE_DIR}/pdex.dll
+            ${STAGING_SOURCE_DIR}/pdex.so
+        COMMAND ${CMAKE_STRIP} --strip-unneeded -R .comment -g $<TARGET_FILE:${TARGET_NAME}> -o ${PDEX_STAGE_FILE}
+        COMMAND ${PDC} ${STAGING_SOURCE_DIR} ${PRODUCT_DIR}/${PDX_PACKAGE_NAME}.pdx
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        VERBATIM
+    )
+else()
+    add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E rm -rf ${STAGING_SOURCE_DIR}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${STAGING_SOURCE_DIR}
+        COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/Source ${STAGING_SOURCE_DIR}
+        COMMAND ${CMAKE_COMMAND} -E rm -f
+            ${STAGING_SOURCE_DIR}/pdex.bin
+            ${STAGING_SOURCE_DIR}/pdex.elf
+            ${STAGING_SOURCE_DIR}/pdex.dylib
+            ${STAGING_SOURCE_DIR}/pdex.dll
+            ${STAGING_SOURCE_DIR}/pdex.so
+        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${TARGET_NAME}> ${PDEX_STAGE_FILE}
+        COMMAND ${PDC} ${STAGING_SOURCE_DIR} ${PRODUCT_DIR}/${PDX_PACKAGE_NAME}.pdx
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        VERBATIM
+    )
+endif()
+
+set_property(
+    TARGET ${TARGET_NAME} APPEND PROPERTY ADDITIONAL_CLEAN_FILES
+    ${STAGING_DIR}
+)
+set_property(
+    TARGET ${TARGET_NAME} APPEND PROPERTY ADDITIONAL_CLEAN_FILES
+    ${PRODUCT_DIR}/${PDX_PACKAGE_NAME}.pdx
+)

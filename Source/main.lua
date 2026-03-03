@@ -43,6 +43,45 @@ function wamr.status()
     }
 end
 
+function wamr.perf()
+    local wasm_update_ms, audio_tick_ms, composite_ms, step_ms, load_ms = wamr_perf_raw()
+    return {
+        wasm_update_ms = wasm_update_ms,
+        audio_tick_ms = audio_tick_ms,
+        composite_ms = composite_ms,
+        step_ms = step_ms,
+        load_ms = load_ms,
+    }
+end
+
+function wamr.runtimeConfig()
+    local logicDivider, audioDisabled, compositeMode, aotEnabled, audioBackend, refreshMode = wamr_runtime_config_raw()
+    return {
+        logic_divider = logicDivider or 1,
+        audio_disabled = audioDisabled and true or false,
+        composite_mode = compositeMode or 0,
+        aot_enabled = aotEnabled and true or false,
+        audio_backend = audioBackend or "native",
+        refresh_rate_mode = refreshMode or 0,
+    }
+end
+
+function wamr.setLogLevel(level)
+    return wamr_set_log_level(level)
+end
+
+function wamr.setRefreshRate(mode)
+    return wamr_set_refresh_rate(mode)
+end
+
+function wamr.fpsRaw()
+    local fps, refresh = wamr_get_fps_raw()
+    return {
+        fps = fps or 0,
+        refresh = refresh or 0,
+    }
+end
+
 function wamr.setDitherMode(mode)
     return wamr_set_dither_mode(mode)
 end
@@ -67,16 +106,27 @@ local state = {
     loaded = false,
     load_ms = 0,
     step_ms = 0,
+    wasm_update_ms = 0,
+    audio_tick_ms = 0,
+    composite_ms = 0,
     err = nil,
     path = "cart/main.wasm",
     dither_mode = 1,
+    logic_divider = 1,
+    audio_disabled = false,
+    composite_mode = 0,
+    aot_enabled = false,
+    audio_backend = "native",
+    refresh_rate_mode = 0,
     carts = {},
     selected_cart = 1,
     list_top = 1,
 }
+local statusSyncIntervalFrames = 6
+local statusSyncCounter = 0
 
 local LIST_X = 18
-local LIST_Y = 60
+local LIST_Y = 50
 local LIST_W = 364
 local LIST_H = 136
 local ROW_H = 22
@@ -109,14 +159,46 @@ local function ensureVisibleSelection()
     state.list_top = clamp(state.list_top, 1, math.max(1, #state.carts - VISIBLE_ROWS + 1))
 end
 
-local function syncStatus()
+local function syncStatus(pollDither, pollPerf)
     local s = wamr.status()
     state.loaded = s.loaded
     state.load_ms = s.load_ms
     state.step_ms = s.step_ms
     state.err = s.err
     state.path = s.path or state.path
-    state.dither_mode = wamr.getDitherMode() or state.dither_mode
+    if pollDither then
+        state.dither_mode = wamr.getDitherMode() or state.dither_mode
+    end
+    if pollPerf then
+        local perf = wamr.perf()
+        state.wasm_update_ms = perf.wasm_update_ms or state.wasm_update_ms
+        state.audio_tick_ms = perf.audio_tick_ms or state.audio_tick_ms
+        state.composite_ms = perf.composite_ms or state.composite_ms
+    end
+end
+
+local function syncRuntimeConfig()
+    local cfg = wamr.runtimeConfig()
+    state.logic_divider = cfg.logic_divider
+    state.audio_disabled = cfg.audio_disabled
+    state.composite_mode = cfg.composite_mode
+    state.aot_enabled = cfg.aot_enabled
+    state.audio_backend = cfg.audio_backend
+    state.refresh_rate_mode = cfg.refresh_rate_mode
+end
+
+local function cartHasAot(path)
+    if path == nil or path == "" then
+        return false
+    end
+    if string.match(path, "%.aot$") ~= nil then
+        return true
+    end
+    local stem = string.match(path, "^(.*)%.wasm$")
+    if stem == nil then
+        return false
+    end
+    return playdate.file.exists(stem .. ".aot")
 end
 
 local function refreshCartList()
@@ -125,17 +207,29 @@ local function refreshCartList()
 
     for line in string.gmatch((joined or "") .. "\n", "(.-)\n") do
         if line ~= "" then
-            table.insert(carts, line)
+            local path, aotFlag = string.match(line, "^(.-)\t([01])$")
+            if path == nil then
+                path = line
+            end
+            table.insert(carts, {
+                path = path,
+                has_aot = aotFlag ~= nil and aotFlag == "1" or cartHasAot(path),
+            })
         end
     end
 
     if #carts == 0 then
-        carts = { "cart/main.wasm" }
+        carts = {
+            {
+                path = "cart/main.wasm",
+                has_aot = cartHasAot("cart/main.wasm"),
+            },
+        }
     end
 
     state.carts = carts
     state.selected_cart = clamp((selectedIndex or 0) + 1, 1, #state.carts)
-    state.path = state.carts[state.selected_cart]
+    state.path = state.carts[state.selected_cart].path
     ensureVisibleSelection()
 end
 
@@ -181,18 +275,25 @@ local function loadSelectedCart()
     state.loaded = ok
     state.load_ms = load_ms
     state.err = err
+    state.wasm_update_ms = 0
+    state.audio_tick_ms = 0
+    state.composite_ms = 0
+end
+
+local function currentModeLabel()
+    local aotName = state.aot_enabled and "AOT:on" or "AOT:off"
+    return string.format("L:%d %s", state.logic_divider, aotName)
 end
 
 local function drawTitleAndStatus()
-    gfx.setFont(fonts.title)
-    gfx.drawText("Cartridge Browser", 16, 8)
+    gfx.setFont(fonts.body)
+    gfx.drawText("Playdate WASM-4", 22, 8)
 
     gfx.drawLine(16, 34, 384, 34)
 
-    gfx.setFont(fonts.body)
-    gfx.drawText(string.format("State: %s", state.loaded and "Running" or "Idle"), 16, 40)
-    gfx.drawText(string.format("Dither: %s", ditherNames[state.dither_mode + 1]), 160, 40)
-    gfx.drawText(string.format("Load %.2fms  Step %.2fms", state.load_ms, state.step_ms), 250, 40)
+    gfx.setFont(fonts.mono)
+    gfx.drawText(string.format("Dither: %s", ditherNames[state.dither_mode + 1]), 22, 36)
+    gfx.drawText(currentModeLabel(), 150, 36)
 end
 
 local function drawCartridgeList()
@@ -209,8 +310,12 @@ local function drawCartridgeList()
             break
         end
 
-        local label = basename(state.carts[idx])
-        if state.carts[idx] == state.path and state.loaded then
+        local cart = state.carts[idx]
+        local label = basename(cart.path)
+        if cart.has_aot then
+            label = label .. " [AOT]"
+        end
+        if cart.path == state.path and state.loaded then
             label = "▶ " .. label
         else
             label = "  " .. label
@@ -229,21 +334,16 @@ local function drawCartridgeList()
     gfx.setFont(fonts.mono)
     gfx.drawText(
         string.format("Carts %d  Selected %d/%d", #state.carts, state.selected_cart, #state.carts),
-        LIST_X, LIST_Y + LIST_H + 4
+        LIST_X + 4 , LIST_Y + LIST_H + 2
     )
 end
 
 local function drawFooter()
-    gfx.drawLine(16, 218, 384, 218)
+    gfx.drawLine(16, 204, 384, 204)
     gfx.setFont(fonts.mono)
 
-    if state.err ~= nil then
-        gfx.drawText("Status: Error - " .. tostring(state.err), 16, 221)
-    else
-        gfx.drawText("Status: " .. tostring(state.path), 16, 221)
-    end
-
-    gfx.drawText("UP/DOWN Select  A Run  B Rescan  LEFT/RIGHT Dither", 16, 230)
+    gfx.drawText("UP/DOWN Select       Ⓐ Run Ⓑ Rescan", 22, 210)
+    gfx.drawText("LEFT/RIGHT Dither", 22, 224)
 end
 
 local function drawBrowser()
@@ -254,18 +354,46 @@ local function drawBrowser()
     playdate.drawFPS(336, 2)
 end
 
-local function drawVerticalNameBottomToTop(text, x, bottomY, stepY)
-    local i
-    local y = bottomY
+local runningNameCache = {
+    text = nil,
+    image = nil,
+    x = 24,
+    y = 0,
+}
 
-    for i = 1, #text do
-        local ch = text:sub(i, i)
-        y = y - stepY
-        if y < 0 then
-            break
-        end
-        gfx.drawText(ch, x, y)
+local function ensureRunningNameImage()
+    local text = string.upper(basename(state.path):gsub("%.wasm$", ""):gsub("%.aot$", ""))
+    if text == runningNameCache.text and runningNameCache.image ~= nil then
+        return
     end
+
+    gfx.setFont(fonts.body)
+    local textW, textH = gfx.getTextSize(text)
+    local src = gfx.image.new(math.max(1, textW + 2), math.max(1, textH + 2), gfx.kColorClear)
+    if src == nil then
+        runningNameCache.text = text
+        runningNameCache.image = nil
+        return
+    end
+
+    gfx.pushContext(src)
+    gfx.clear(gfx.kColorClear)
+    gfx.setColor(gfx.kColorBlack)
+    gfx.drawText(text, 1, 1)
+    gfx.popContext()
+
+    -- Use one cached rotated bitmap for static HUD name; draw only this image each frame.
+    local rotated = src:rotatedImage(-90)
+    if rotated == nil then
+        runningNameCache.text = text
+        runningNameCache.image = nil
+        return
+    end
+
+    local _, rotatedH = rotated:getSize()
+    runningNameCache.text = text
+    runningNameCache.image = rotated
+    runningNameCache.y = 238 - rotatedH
 end
 
 local function drawRunningHUD()
@@ -279,12 +407,10 @@ local function drawRunningHUD()
 
     gfx.setImageDrawMode(gfx.kDrawModeFillWhite)
     gfx.setFont(fonts.body)
-    drawVerticalNameBottomToTop(
-        string.upper(basename(state.path):gsub("%.wasm$", "")),
-        24,
-        238,
-        14
-    )
+    ensureRunningNameImage()
+    if runningNameCache.image ~= nil then
+        runningNameCache.image:draw(runningNameCache.x, runningNameCache.y)
+    end
 
     gfx.setImageDrawMode(gfx.kDrawModeCopy)
     gfx.setColor(gfx.kColorBlack)
@@ -295,6 +421,16 @@ local function drawRunningHUD()
     gfx.drawText("WASM4", 336, 24)
     gfx.drawText("FPS", 344, 46)
     playdate.drawFPS(336, 58)
+    gfx.drawText(string.format("W %.2f", state.wasm_update_ms), 328, 82)
+    gfx.drawText(string.format("A %.2f", state.audio_tick_ms), 328, 96)
+    gfx.drawText(string.format("C %.2f", state.composite_ms), 328, 110)
+    gfx.drawText(string.format("L%d", state.logic_divider), 336, 124)
+    if state.audio_disabled then
+        gfx.drawText("A OFF", 328, 138)
+    end
+    if state.composite_mode == 1 then
+        gfx.drawText("C MIN", 328, 152)
+    end
     gfx.setImageDrawMode(gfx.kDrawModeCopy)
 end
 
@@ -304,6 +440,7 @@ local function stepAndDrawRunning()
         state.step_ms = step_ms
     else
         state.err = err
+        syncStatus(true, true)
     end
     drawRunningHUD()
 end
@@ -332,14 +469,20 @@ end
 
 refreshCartList()
 applySelectedCart()
-syncStatus()
+syncStatus(true, true)
+syncRuntimeConfig()
 
 function playdate.update()
-    syncStatus()
-
     if state.loaded then
+        statusSyncCounter = statusSyncCounter + 1
+        if statusSyncCounter >= statusSyncIntervalFrames then
+            syncStatus(true, true)
+            statusSyncCounter = 0
+        end
         stepAndDrawRunning()
     else
+        syncStatus(true, true)
+        statusSyncCounter = 0
         handleBrowserInput()
         if state.loaded then
             gfx.clear(gfx.kColorWhite)

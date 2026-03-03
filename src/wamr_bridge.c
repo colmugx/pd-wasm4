@@ -1,4 +1,5 @@
 #include <ctype.h>
+#include <stdatomic.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -9,8 +10,8 @@
 #include "pd_api.h"
 #include "wasm_export.h"
 
-#include "apu.h"
 #include "framebuffer.h"
+#include "host_audio.h"
 #include "util.h"
 
 #define W4_CART_DIR "cart"
@@ -40,28 +41,99 @@
 #define W4_DISK_MAX_BYTES 1024
 #define W4_DISK_FLUSH_INTERVAL_FRAMES 30
 
-#define W4_VIEWPORT_SIZE LCD_ROWS
-#define W4_VIEWPORT_X ((LCD_COLUMNS - W4_VIEWPORT_SIZE) / 2)
-#define W4_VIEWPORT_Y 0
+#define W4_MAX_VIEWPORT_SIZE LCD_ROWS
 
-#define AUDIO_CHUNK_FRAMES 512
+#ifndef WAMR_PD_AUDIO_CHUNK_FRAMES
+#define WAMR_PD_AUDIO_CHUNK_FRAMES 512
+#endif
+
+#ifndef WAMR_PD_LOGIC_TICK_DIVIDER
+#define WAMR_PD_LOGIC_TICK_DIVIDER 1
+#endif
+
+#ifndef WAMR_PD_DISABLE_AUDIO_TICK
+#define WAMR_PD_DISABLE_AUDIO_TICK 0
+#endif
+
+#ifndef WAMR_PD_COMPOSITE_MODE
+#define WAMR_PD_COMPOSITE_MODE 0
+#endif
+
+#ifndef WAMR_PD_ENABLE_AOT
+#define WAMR_PD_ENABLE_AOT 0
+#endif
+
+#ifndef WAMR_PD_USE_POOL_ALLOC
+#define WAMR_PD_USE_POOL_ALLOC 0
+#endif
+
+#ifndef WAMR_PD_POOL_SIZE_BYTES
+#define WAMR_PD_POOL_SIZE_BYTES (256 * 1024)
+#endif
+
+#ifndef WAMR_PD_AUDIO_BACKEND
+#define WAMR_PD_AUDIO_BACKEND WAMR_PD_AUDIO_BACKEND_NATIVE
+#endif
+
+#if WAMR_PD_AUDIO_CHUNK_FRAMES <= 0
+#error "WAMR_PD_AUDIO_CHUNK_FRAMES must be > 0"
+#endif
+
+#if WAMR_PD_LOGIC_TICK_DIVIDER <= 0
+#error "WAMR_PD_LOGIC_TICK_DIVIDER must be > 0"
+#endif
+
+#if (WAMR_PD_COMPOSITE_MODE != 0) && (WAMR_PD_COMPOSITE_MODE != 1)
+#error "WAMR_PD_COMPOSITE_MODE must be 0 or 1"
+#endif
+
+#if (WAMR_PD_DISABLE_AUDIO_TICK != 0) && (WAMR_PD_DISABLE_AUDIO_TICK != 1)
+#error "WAMR_PD_DISABLE_AUDIO_TICK must be 0 or 1"
+#endif
+
+#if WAMR_PD_POOL_SIZE_BYTES < (128 * 1024)
+#error "WAMR_PD_POOL_SIZE_BYTES must be >= 128KB"
+#endif
+
+#if (WAMR_PD_AUDIO_BACKEND != WAMR_PD_AUDIO_BACKEND_WASM4_COMPAT) \
+    && (WAMR_PD_AUDIO_BACKEND != WAMR_PD_AUDIO_BACKEND_NATIVE)
+#error "WAMR_PD_AUDIO_BACKEND must be 0 or 1"
+#endif
 
 #define W4_DITHER_NONE 0
 #define W4_DITHER_ORDERED 1
 #define W4_DITHER_MODE_COUNT 2
 
-static const char *g_dither_mode_labels[W4_DITHER_MODE_COUNT] = {
-    "None",
-    "Ordered",
+#define W4_RENDER_MODE_FAST_160 0
+#define W4_RENDER_MODE_QUALITY_240 1
+#define W4_RENDER_MODE_COUNT 2
+#define W4_COMPOSITE_MODE_NORMAL 0
+#define W4_COMPOSITE_MODE_MINIMAL 1
+#define W4_LOG_ERROR 0
+#define W4_LOG_INFO 1
+#define W4_LOG_DEBUG 2
+#define W4_REFRESH_RATE_30 0
+#define W4_REFRESH_RATE_50 1
+#define W4_REFRESH_RATE_UNCAPPED 2
+#define W4_BUTTON_QUEUE_SIZE 32
+
+static const char *g_render_mode_labels[W4_RENDER_MODE_COUNT] = {
+    "Fast 160",
+    "Quality 240",
 };
 
-static bool g_scale_map_ready;
-static uint16_t g_scale_x0[W4_VIEWPORT_SIZE];
-static uint16_t g_scale_x1[W4_VIEWPORT_SIZE];
-static uint16_t g_scale_xw[W4_VIEWPORT_SIZE];
-static uint16_t g_scale_y0[W4_VIEWPORT_SIZE];
-static uint16_t g_scale_y1[W4_VIEWPORT_SIZE];
-static uint16_t g_scale_yw[W4_VIEWPORT_SIZE];
+static const uint8_t g_bayer2[2][2] = {
+    { 0, 2 },
+    { 3, 1 },
+};
+
+static int g_scale_map_size;
+static uint16_t g_scale_x0[W4_MAX_VIEWPORT_SIZE];
+static uint16_t g_scale_x1[W4_MAX_VIEWPORT_SIZE];
+static uint16_t g_scale_xw[W4_MAX_VIEWPORT_SIZE];
+static uint16_t g_scale_y0[W4_MAX_VIEWPORT_SIZE];
+static uint16_t g_scale_y1[W4_MAX_VIEWPORT_SIZE];
+static uint16_t g_scale_yw[W4_MAX_VIEWPORT_SIZE];
 static uint8_t g_src_luma[W4_WIDTH * W4_HEIGHT];
 
 #pragma pack(push, 1)
@@ -87,11 +159,17 @@ typedef struct W4Disk {
 typedef struct CartEntry {
     char path[W4_MAX_PATH_LEN];
     char title[W4_MAX_PATH_LEN];
+    char stem[W4_MAX_PATH_LEN];
+    char wasm_path[W4_MAX_PATH_LEN];
+    char aot_path[W4_MAX_PATH_LEN];
 } CartEntry;
 
 typedef struct WamrState {
     bool runtime_initialized;
     bool loaded;
+#if WAMR_PD_USE_POOL_ALLOC
+    uint8_t wamr_pool[WAMR_PD_POOL_SIZE_BYTES];
+#endif
 
     uint8_t *wasm_bytes;
     uint32_t wasm_size;
@@ -114,34 +192,81 @@ typedef struct WamrState {
     char disk_path[W4_MAX_PATH_LEN];
 
     CartEntry carts[W4_MAX_CARTS];
-    const char *cart_title_ptrs[W4_MAX_CARTS];
     int cart_count;
     int selected_cart;
 
-    PDMenuItem *menu_select_item;
     PDMenuItem *menu_reload_item;
     PDMenuItem *menu_reset_item;
-    PDMenuItem *menu_dither_item;
-    PDMenuItem *menu_rescan_item;
-    const char *dither_mode_ptrs[W4_DITHER_MODE_COUNT];
+    PDMenuItem *menu_render_item;
+    const char *render_mode_ptrs[W4_RENDER_MODE_COUNT];
     int dither_mode;
+    int render_mode;
+    uint32_t logic_tick_counter;
 
     SoundSource *audio_source;
 
     float last_load_ms;
     float last_step_ms;
+    float last_wasm_update_ms;
+    float last_audio_tick_ms;
+    float last_composite_ms;
+    float last_fps;
     char last_error[W4_MAX_ERROR_LEN];
     bool block_button1_until_release;
+    bool framebuffer_clear_needed;
+    bool paused;
+    bool button_callback_enabled;
+    int log_level;
+    int refresh_rate_mode;
+    float refresh_rate;
+    atomic_uint_fast32_t button_down_mask;
+    atomic_uint_fast32_t button_pressed_mask;
+    atomic_uint_fast32_t button_released_mask;
 } WamrState;
 
 static PlaydateAPI *pd;
 static WamrState g_state;
 
 static bool load_wasm_cart(const char *path);
+static bool load_module_from_path(const char *module_path, const char *cart_path);
 static void cleanup_loaded_module(void);
 static void refresh_cart_list(const char *preferred_path);
 static bool set_dither_mode(int mode);
-static void init_scale_map(void);
+static bool set_render_mode(int mode);
+static void init_scale_map(int viewport_size);
+static bool set_refresh_rate_mode(int mode);
+static int on_button_event(PDButtons button, int down, uint32_t when, void *userdata);
+
+static void
+log_message(int level, const char *fmt, ...)
+{
+    va_list args;
+    char buf[384];
+    const char *level_tag;
+
+    if (!pd || !pd->system || !pd->system->logToConsole) {
+        return;
+    }
+    if (level > g_state.log_level) {
+        return;
+    }
+
+    level_tag = (level <= W4_LOG_ERROR)
+        ? "error"
+        : ((level == W4_LOG_INFO) ? "info" : "debug");
+
+    va_start(args, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    pd->system->logToConsole("[wasm4][%s] %s", level_tag, buf);
+}
+
+static void
+log_file_error(const char *op, const char *path, const char *message)
+{
+    log_message(W4_LOG_ERROR, "[file][op=%s][path=%s] %s",
+                op ? op : "?", path ? path : "?", message ? message : "unknown");
+}
 
 static void
 set_error(const char *fmt, ...)
@@ -150,6 +275,7 @@ set_error(const char *fmt, ...)
     va_start(args, fmt);
     vsnprintf(g_state.last_error, sizeof(g_state.last_error), fmt, args);
     va_end(args);
+    log_message(W4_LOG_ERROR, "%s", g_state.last_error);
 }
 
 static void
@@ -177,11 +303,106 @@ find_cart_index(const char *path)
     }
 
     for (i = 0; i < g_state.cart_count; i++) {
-        if (strcmp(g_state.carts[i].path, path) == 0) {
+        if (strcmp(g_state.carts[i].path, path) == 0
+            || (g_state.carts[i].wasm_path[0] != '\0'
+                && strcmp(g_state.carts[i].wasm_path, path) == 0)
+            || (g_state.carts[i].aot_path[0] != '\0'
+                && strcmp(g_state.carts[i].aot_path, path) == 0)) {
             return i;
         }
     }
     return -1;
+}
+
+static int
+find_cart_index_by_stem(const char *stem)
+{
+    int i;
+
+    if (!stem || stem[0] == '\0') {
+        return -1;
+    }
+
+    for (i = 0; i < g_state.cart_count; i++) {
+        if (strcmp(g_state.carts[i].stem, stem) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static void
+extract_cart_stem(const char *name, char *out, size_t out_size)
+{
+    const char *dot;
+    size_t len;
+
+    if (!name || !out || out_size == 0) {
+        return;
+    }
+
+    dot = strrchr(name, '.');
+    if (!dot || dot == name) {
+        strncpy(out, name, out_size - 1);
+        out[out_size - 1] = '\0';
+        return;
+    }
+
+    len = (size_t)(dot - name);
+    if (len >= out_size) {
+        len = out_size - 1;
+    }
+    memcpy(out, name, len);
+    out[len] = '\0';
+}
+
+static const char *
+filename_from_path(const char *path)
+{
+    const char *base;
+
+    if (!path) {
+        return "";
+    }
+
+    base = strrchr(path, '/');
+    return base ? base + 1 : path;
+}
+
+static void
+normalize_cart_entry(CartEntry *entry)
+{
+    const char *display_path;
+    const char *display_name;
+
+    if (!entry) {
+        return;
+    }
+
+    if (entry->aot_path[0] != '\0' && entry->wasm_path[0] != '\0') {
+        display_path = entry->wasm_path;
+        strncpy(entry->path, entry->wasm_path, sizeof(entry->path) - 1);
+        entry->path[sizeof(entry->path) - 1] = '\0';
+    }
+    else if (entry->aot_path[0] != '\0') {
+        display_path = entry->aot_path;
+        strncpy(entry->path, entry->aot_path, sizeof(entry->path) - 1);
+        entry->path[sizeof(entry->path) - 1] = '\0';
+    }
+    else if (entry->wasm_path[0] != '\0') {
+        display_path = entry->wasm_path;
+        strncpy(entry->path, entry->wasm_path, sizeof(entry->path) - 1);
+        entry->path[sizeof(entry->path) - 1] = '\0';
+    }
+    else {
+        entry->path[0] = '\0';
+        entry->title[0] = '\0';
+        return;
+    }
+
+    display_name = filename_from_path(display_path);
+    strncpy(entry->title, display_name, sizeof(entry->title) - 1);
+    entry->title[sizeof(entry->title) - 1] = '\0';
 }
 
 static int
@@ -214,12 +435,24 @@ static void
 collect_cart_callback(const char *name, void *userdata)
 {
     char full_path[W4_MAX_PATH_LEN];
+    char stem[W4_MAX_PATH_LEN];
     FileStat st;
     int idx;
+    bool is_wasm;
+    bool is_aot;
 
     (void)userdata;
 
-    if (!name || !str_ends_with(name, ".wasm")) {
+    if (!name) {
+        return;
+    }
+
+    is_wasm = str_ends_with(name, ".wasm");
+    is_aot = str_ends_with(name, ".aot");
+    if (!is_wasm && !is_aot) {
+        return;
+    }
+    if (is_aot && !WAMR_PD_ENABLE_AOT) {
         return;
     }
 
@@ -232,28 +465,35 @@ collect_cart_callback(const char *name, void *userdata)
         return;
     }
 
-    idx = g_state.cart_count;
-    if (idx >= W4_MAX_CARTS) {
-        return;
+    extract_cart_stem(name, stem, sizeof(stem));
+    idx = find_cart_index_by_stem(stem);
+    if (idx < 0) {
+        idx = g_state.cart_count;
+        if (idx >= W4_MAX_CARTS) {
+            return;
+        }
+
+        memset(&g_state.carts[idx], 0, sizeof(g_state.carts[idx]));
+        snprintf(g_state.carts[idx].stem, sizeof(g_state.carts[idx].stem), "%s",
+                 stem);
+        g_state.cart_count++;
     }
 
-    strncpy(g_state.carts[idx].path, full_path,
-            sizeof(g_state.carts[idx].path) - 1);
-    g_state.carts[idx].path[sizeof(g_state.carts[idx].path) - 1] = '\0';
+    if (is_aot) {
+        snprintf(g_state.carts[idx].aot_path, sizeof(g_state.carts[idx].aot_path),
+                 "%s", full_path);
+    }
+    else {
+        snprintf(g_state.carts[idx].wasm_path, sizeof(g_state.carts[idx].wasm_path),
+                 "%s", full_path);
+    }
 
-    strncpy(g_state.carts[idx].title, name, sizeof(g_state.carts[idx].title) - 1);
-    g_state.carts[idx].title[sizeof(g_state.carts[idx].title) - 1] = '\0';
-
-    g_state.cart_count++;
+    normalize_cart_entry(&g_state.carts[idx]);
 }
 
 static void
 remove_menu_items(void)
 {
-    if (g_state.menu_select_item) {
-        pd->system->removeMenuItem(g_state.menu_select_item);
-        g_state.menu_select_item = NULL;
-    }
     if (g_state.menu_reload_item) {
         pd->system->removeMenuItem(g_state.menu_reload_item);
         g_state.menu_reload_item = NULL;
@@ -262,34 +502,9 @@ remove_menu_items(void)
         pd->system->removeMenuItem(g_state.menu_reset_item);
         g_state.menu_reset_item = NULL;
     }
-    if (g_state.menu_dither_item) {
-        pd->system->removeMenuItem(g_state.menu_dither_item);
-        g_state.menu_dither_item = NULL;
-    }
-    if (g_state.menu_rescan_item) {
-        pd->system->removeMenuItem(g_state.menu_rescan_item);
-        g_state.menu_rescan_item = NULL;
-    }
-}
-
-static void
-on_menu_select(void *userdata)
-{
-    int idx;
-
-    (void)userdata;
-
-    if (!g_state.menu_select_item) {
-        return;
-    }
-
-    idx = pd->system->getMenuItemValue(g_state.menu_select_item);
-    if (idx >= 0 && idx < g_state.cart_count) {
-        g_state.selected_cart = idx;
-        clear_error();
-        if (g_state.loaded) {
-            (void)load_wasm_cart(current_cart_path());
-        }
+    if (g_state.menu_render_item) {
+        pd->system->removeMenuItem(g_state.menu_render_item);
+        g_state.menu_render_item = NULL;
     }
 }
 
@@ -309,30 +524,18 @@ on_menu_reset(void *userdata)
 }
 
 static void
-on_menu_dither(void *userdata)
+on_menu_render(void *userdata)
 {
     int mode;
 
     (void)userdata;
 
-    if (!g_state.menu_dither_item) {
+    if (!g_state.menu_render_item) {
         return;
     }
 
-    mode = pd->system->getMenuItemValue(g_state.menu_dither_item);
-    (void)set_dither_mode(mode);
-}
-
-static void
-on_menu_rescan(void *userdata)
-{
-    char preferred_path[W4_MAX_PATH_LEN];
-
-    (void)userdata;
-
-    strncpy(preferred_path, current_cart_path(), sizeof(preferred_path) - 1);
-    preferred_path[sizeof(preferred_path) - 1] = '\0';
-    refresh_cart_list(preferred_path);
+    mode = pd->system->getMenuItemValue(g_state.menu_render_item);
+    (void)set_render_mode(mode);
 }
 
 static void
@@ -342,42 +545,21 @@ setup_menu_items(void)
 
     remove_menu_items();
 
-    if (g_state.cart_count <= 0) {
-        return;
-    }
-
-    for (i = 0; i < g_state.cart_count; i++) {
-        g_state.cart_title_ptrs[i] = g_state.carts[i].title;
-    }
-
-    g_state.menu_select_item = pd->system->addOptionsMenuItem(
-        "Cartridge", g_state.cart_title_ptrs, g_state.cart_count,
-        on_menu_select, NULL);
-
-    if (g_state.menu_select_item && g_state.selected_cart >= 0
-        && g_state.selected_cart < g_state.cart_count) {
-        pd->system->setMenuItemValue(g_state.menu_select_item,
-                                     g_state.selected_cart);
-    }
-
     g_state.menu_reload_item =
         pd->system->addMenuItem("Back To List", on_menu_reload, NULL);
     g_state.menu_reset_item =
-        pd->system->addMenuItem("Reset Game", on_menu_reset, NULL);
+        pd->system->addMenuItem("Reset", on_menu_reset, NULL);
 
-    for (i = 0; i < W4_DITHER_MODE_COUNT; i++) {
-        g_state.dither_mode_ptrs[i] = g_dither_mode_labels[i];
+    for (i = 0; i < W4_RENDER_MODE_COUNT; i++) {
+        g_state.render_mode_ptrs[i] = g_render_mode_labels[i];
     }
-    g_state.menu_dither_item = pd->system->addOptionsMenuItem(
-        "Dither", g_state.dither_mode_ptrs, W4_DITHER_MODE_COUNT,
-        on_menu_dither, NULL);
-    if (g_state.menu_dither_item) {
-        pd->system->setMenuItemValue(g_state.menu_dither_item,
-                                     g_state.dither_mode);
+    g_state.menu_render_item = pd->system->addOptionsMenuItem(
+        "Scale", g_state.render_mode_ptrs, W4_RENDER_MODE_COUNT,
+        on_menu_render, NULL);
+    if (g_state.menu_render_item) {
+        pd->system->setMenuItemValue(g_state.menu_render_item,
+                                     g_state.render_mode);
     }
-
-    g_state.menu_rescan_item =
-        pd->system->addMenuItem("Rescan Cartridges", on_menu_rescan, NULL);
 }
 
 static void
@@ -388,18 +570,17 @@ refresh_cart_list(const char *preferred_path)
     g_state.cart_count = 0;
 
     if (pd->file->listfiles(W4_CART_DIR, collect_cart_callback, NULL, 0) != 0) {
-        pd->system->logToConsole("listfiles %s failed: %s", W4_CART_DIR,
-                                 pd->file->geterr());
+        log_file_error("listfiles", W4_CART_DIR, pd->file->geterr());
     }
 
     if (g_state.cart_count == 0) {
-        strncpy(g_state.carts[0].path, W4_DEFAULT_CART_PATH,
-                sizeof(g_state.carts[0].path) - 1);
-        g_state.carts[0].path[sizeof(g_state.carts[0].path) - 1] = '\0';
-
-        strncpy(g_state.carts[0].title, "main.wasm",
-                sizeof(g_state.carts[0].title) - 1);
-        g_state.carts[0].title[sizeof(g_state.carts[0].title) - 1] = '\0';
+        memset(&g_state.carts[0], 0, sizeof(g_state.carts[0]));
+        strncpy(g_state.carts[0].stem, "main", sizeof(g_state.carts[0].stem) - 1);
+        g_state.carts[0].stem[sizeof(g_state.carts[0].stem) - 1] = '\0';
+        strncpy(g_state.carts[0].wasm_path, W4_DEFAULT_CART_PATH,
+                sizeof(g_state.carts[0].wasm_path) - 1);
+        g_state.carts[0].wasm_path[sizeof(g_state.carts[0].wasm_path) - 1] = '\0';
+        normalize_cart_entry(&g_state.carts[0]);
         g_state.cart_count = 1;
     }
     else {
@@ -513,19 +694,41 @@ palette_luma(uint32_t rgb)
 }
 
 static void
-init_scale_map(void)
+get_viewport_rect(int *x, int *y, int *size)
+{
+    int viewport_size = (g_state.render_mode == W4_RENDER_MODE_FAST_160)
+                            ? W4_WIDTH
+                            : LCD_ROWS;
+
+    if (size) {
+        *size = viewport_size;
+    }
+    if (x) {
+        *x = (LCD_COLUMNS - viewport_size) / 2;
+    }
+    if (y) {
+        *y = (LCD_ROWS - viewport_size) / 2;
+    }
+}
+
+static void
+init_scale_map(int viewport_size)
 {
     int i;
 
-    if (g_scale_map_ready) {
+    if (viewport_size <= 1 || viewport_size > W4_MAX_VIEWPORT_SIZE) {
         return;
     }
 
-    for (i = 0; i < W4_VIEWPORT_SIZE; i++) {
+    if (g_scale_map_size == viewport_size) {
+        return;
+    }
+
+    for (i = 0; i < viewport_size; i++) {
         uint32_t x_fp =
-            ((uint32_t)i * (uint32_t)(W4_WIDTH - 1) << 16) / (W4_VIEWPORT_SIZE - 1);
+            ((uint32_t)i * (uint32_t)(W4_WIDTH - 1) << 16) / (viewport_size - 1);
         uint32_t y_fp =
-            ((uint32_t)i * (uint32_t)(W4_HEIGHT - 1) << 16) / (W4_VIEWPORT_SIZE - 1);
+            ((uint32_t)i * (uint32_t)(W4_HEIGHT - 1) << 16) / (viewport_size - 1);
         uint16_t x0 = (uint16_t)(x_fp >> 16);
         uint16_t y0 = (uint16_t)(y_fp >> 16);
 
@@ -537,20 +740,91 @@ init_scale_map(void)
         g_scale_yw[i] = (uint16_t)(y_fp & 0xffffu);
     }
 
-    g_scale_map_ready = true;
+    g_scale_map_size = viewport_size;
+}
+
+static void
+build_threshold_tables(uint8_t binary_threshold, uint8_t luma_min,
+                       uint32_t luma_range, uint8_t binary_black[256],
+                       uint8_t ordered_black[4][256])
+{
+    int i;
+
+    for (i = 0; i < 256; i++) {
+        uint32_t normalized =
+            ((uint32_t)(i - luma_min) * 255u + (luma_range / 2u)) / luma_range;
+        int t00 = (int)g_bayer2[0][0] * 64 + 32;
+        int t01 = (int)g_bayer2[0][1] * 64 + 32;
+        int t10 = (int)g_bayer2[1][0] * 64 + 32;
+        int t11 = (int)g_bayer2[1][1] * 64 + 32;
+
+        binary_black[i] = (uint8_t)(i < binary_threshold);
+        ordered_black[0][i] = (uint8_t)((int)normalized < t00);
+        ordered_black[1][i] = (uint8_t)((int)normalized < t01);
+        ordered_black[2][i] = (uint8_t)((int)normalized < t10);
+        ordered_black[3][i] = (uint8_t)((int)normalized < t11);
+    }
+}
+
+static void
+build_fast160_nibble_tables(const uint8_t luma[4], uint8_t binary_threshold,
+                            uint8_t luma_min, uint32_t luma_range,
+                            uint8_t binary_nibble[256],
+                            uint8_t ordered_nibble[2][256])
+{
+    int b;
+
+    for (b = 0; b < 256; b++) {
+        int c0 = b & 0x3;
+        int c1 = (b >> 2) & 0x3;
+        int c2 = (b >> 4) & 0x3;
+        int c3 = (b >> 6) & 0x3;
+        int y_parity;
+        uint8_t bits = 0;
+
+        bits |= (uint8_t)((luma[c0] < binary_threshold) ? 0x8 : 0x0);
+        bits |= (uint8_t)((luma[c1] < binary_threshold) ? 0x4 : 0x0);
+        bits |= (uint8_t)((luma[c2] < binary_threshold) ? 0x2 : 0x0);
+        bits |= (uint8_t)((luma[c3] < binary_threshold) ? 0x1 : 0x0);
+        binary_nibble[b] = bits;
+
+        for (y_parity = 0; y_parity < 2; y_parity++) {
+            uint32_t n0 =
+                ((uint32_t)(luma[c0] - luma_min) * 255u + (luma_range / 2u))
+                / luma_range;
+            uint32_t n1 =
+                ((uint32_t)(luma[c1] - luma_min) * 255u + (luma_range / 2u))
+                / luma_range;
+            uint32_t n2 =
+                ((uint32_t)(luma[c2] - luma_min) * 255u + (luma_range / 2u))
+                / luma_range;
+            uint32_t n3 =
+                ((uint32_t)(luma[c3] - luma_min) * 255u + (luma_range / 2u))
+                / luma_range;
+            int t_even = (int)g_bayer2[y_parity][0] * 64 + 32;
+            int t_odd = (int)g_bayer2[y_parity][1] * 64 + 32;
+            uint8_t nibble = 0;
+
+            nibble |= (uint8_t)(((int)n0 < t_even) ? 0x8 : 0x0);
+            nibble |= (uint8_t)(((int)n1 < t_odd) ? 0x4 : 0x0);
+            nibble |= (uint8_t)(((int)n2 < t_even) ? 0x2 : 0x0);
+            nibble |= (uint8_t)(((int)n3 < t_odd) ? 0x1 : 0x0);
+            ordered_nibble[y_parity][b] = nibble;
+        }
+    }
 }
 
 static void
 composite_to_playdate_framebuffer(void)
 {
-    static const uint8_t bayer2[2][2] = {
-        { 0, 2 },
-        { 3, 1 },
-    };
-
     uint8_t *frame;
     uint8_t luma[4];
     uint8_t sorted_luma[4];
+    uint8_t binary_black[256];
+    uint8_t ordered_black[4][256];
+    int viewport_x;
+    int viewport_y;
+    int viewport_size;
     int x, y;
     uint32_t pixel_index;
     uint8_t binary_threshold;
@@ -565,8 +839,23 @@ composite_to_playdate_framebuffer(void)
     if (!frame) {
         return;
     }
+    get_viewport_rect(&viewport_x, &viewport_y, &viewport_size);
 
-    memset(frame, 0, LCD_ROWS * LCD_ROWSIZE);
+#if WAMR_PD_COMPOSITE_MODE == W4_COMPOSITE_MODE_MINIMAL
+    if (g_state.framebuffer_clear_needed) {
+        int y;
+        int left = viewport_x >> 3;
+        int right = (viewport_x + viewport_size + 7) >> 3;
+        size_t row_bytes = (size_t)(right - left);
+
+        for (y = viewport_y; y < viewport_y + viewport_size; y++) {
+            memset(frame + y * LCD_ROWSIZE + left, 0, row_bytes);
+        }
+        g_state.framebuffer_clear_needed = false;
+    }
+    pd->graphics->markUpdatedRows(viewport_y, viewport_y + viewport_size - 1);
+    return;
+#endif
 
     for (x = 0; x < 4; x++) {
         luma[x] = palette_luma(w4_read32LE(&g_state.w4_mem->palette[x]));
@@ -589,7 +878,59 @@ composite_to_playdate_framebuffer(void)
         luma_range = 1;
     }
 
-    init_scale_map();
+    if (g_state.render_mode == W4_RENDER_MODE_FAST_160) {
+        uint8_t binary_nibble[256];
+        uint8_t ordered_nibble[2][256];
+        int dst_row_bytes = W4_WIDTH / 8;
+        bool cleared = false;
+
+        build_fast160_nibble_tables(luma, binary_threshold, luma_min, luma_range,
+                                    binary_nibble, ordered_nibble);
+
+        if (g_state.framebuffer_clear_needed) {
+            for (y = 0; y < LCD_ROWS; y++) {
+                uint8_t *row = frame + y * LCD_ROWSIZE + (viewport_x >> 3);
+                memset(row, 0, (size_t)dst_row_bytes);
+            }
+            g_state.framebuffer_clear_needed = false;
+            cleared = true;
+        }
+
+        for (y = 0; y < W4_HEIGHT; y++) {
+            const uint8_t *src_row =
+                g_state.w4_mem->framebuffer + (size_t)y * (W4_WIDTH / 4);
+            uint8_t *dst_row =
+                frame + (viewport_y + y) * LCD_ROWSIZE + (viewport_x >> 3);
+
+            if (g_state.dither_mode == W4_DITHER_NONE) {
+                for (x = 0; x < dst_row_bytes; x++) {
+                    uint8_t b0 = src_row[x * 2];
+                    uint8_t b1 = src_row[x * 2 + 1];
+                    dst_row[x] = (uint8_t)((binary_nibble[b0] << 4) | binary_nibble[b1]);
+                }
+            }
+            else {
+                const uint8_t *tbl = ordered_nibble[y & 1];
+                for (x = 0; x < dst_row_bytes; x++) {
+                    uint8_t b0 = src_row[x * 2];
+                    uint8_t b1 = src_row[x * 2 + 1];
+                    dst_row[x] = (uint8_t)((tbl[b0] << 4) | tbl[b1]);
+                }
+            }
+        }
+
+        if (cleared) {
+            pd->graphics->markUpdatedRows(0, LCD_ROWS - 1);
+        }
+        else {
+            pd->graphics->markUpdatedRows(viewport_y, viewport_y + W4_HEIGHT - 1);
+        }
+        return;
+    }
+
+    build_threshold_tables(binary_threshold, luma_min, luma_range, binary_black,
+                           ordered_black);
+    init_scale_map(viewport_size);
 
     for (pixel_index = 0; pixel_index < (uint32_t)(W4_WIDTH * W4_HEIGHT);
          pixel_index++) {
@@ -598,35 +939,30 @@ composite_to_playdate_framebuffer(void)
         g_src_luma[pixel_index] = luma[color_index];
     }
 
-    for (y = 0; y < W4_VIEWPORT_SIZE; y++) {
+    for (y = 0; y < viewport_size; y++) {
         uint16_t src_y = g_scale_y0[y];
         if (g_scale_yw[y] >= 32768u && g_scale_y1[y] > src_y) {
             src_y = g_scale_y1[y];
         }
         const uint8_t *src_row = g_src_luma + (uint32_t)src_y * W4_WIDTH;
-        uint8_t *row = frame + (W4_VIEWPORT_Y + y) * LCD_ROWSIZE;
+        uint8_t *row = frame + (viewport_y + y) * LCD_ROWSIZE;
 
-        for (x = 0; x < W4_VIEWPORT_SIZE; x++) {
+        for (x = 0; x < viewport_size; x++) {
             uint16_t src_x = g_scale_x0[x];
             if (g_scale_xw[x] >= 32768u && g_scale_x1[x] > src_x) {
                 src_x = g_scale_x1[x];
             }
             uint8_t sample_luma = src_row[src_x];
-            int threshold;
             bool black;
-            uint8_t *byte = row + ((W4_VIEWPORT_X + x) >> 3);
-            uint8_t mask = (uint8_t)(0x80u >> ((W4_VIEWPORT_X + x) & 7));
+            uint8_t *byte = row + ((viewport_x + x) >> 3);
+            uint8_t mask = (uint8_t)(0x80u >> ((viewport_x + x) & 7));
 
             if (g_state.dither_mode == W4_DITHER_NONE) {
-                threshold = binary_threshold;
-                black = sample_luma < threshold;
+                black = binary_black[sample_luma] != 0;
             }
             else {
-                uint32_t normalized =
-                    ((uint32_t)(sample_luma - luma_min) * 255u + (luma_range / 2u))
-                    / luma_range;
-                int ordered_threshold = (int)bayer2[y & 1][x & 1] * 64 + 32;
-                black = (int)normalized < ordered_threshold;
+                int parity = ((y & 1) << 1) | (x & 1);
+                black = ordered_black[parity][sample_luma] != 0;
             }
             if (black) {
                 *byte |= mask;
@@ -637,8 +973,7 @@ composite_to_playdate_framebuffer(void)
         }
     }
 
-    pd->graphics->markUpdatedRows(W4_VIEWPORT_Y,
-                                  W4_VIEWPORT_Y + W4_VIEWPORT_SIZE - 1);
+    pd->graphics->markUpdatedRows(viewport_y, viewport_y + viewport_size - 1);
 }
 
 static void
@@ -665,9 +1000,10 @@ init_w4_memory_state(void)
     g_state.w4_mem->systemFlags = 0;
 
     w4_framebufferInit(g_state.w4_mem->drawColors, g_state.w4_mem->framebuffer);
-    w4_apuInit();
+    host_audio_reset();
 
     g_state.first_frame = true;
+    g_state.framebuffer_clear_needed = true;
 }
 
 static void
@@ -695,7 +1031,12 @@ derive_disk_path(const char *cart_path, char *out_path, size_t out_size)
         stem[sizeof(stem) - 1] = '\0';
     }
 
-    pd->file->mkdir("save");
+    if (pd->file->mkdir("save") != 0) {
+        const char *err = pd->file->geterr();
+        if (err && err[0] != '\0') {
+            log_file_error("mkdir", "save", err);
+        }
+    }
     snprintf(out_path, out_size, "save/%s.disk", stem);
 }
 
@@ -716,10 +1057,17 @@ load_disk_for_cart(const char *cart_path)
         file = pd->file->open(g_state.disk_path, kFileRead);
     }
     if (!file) {
+        const char *err = pd->file->geterr();
+        if (err && err[0] != '\0') {
+            log_file_error("open", g_state.disk_path, err);
+        }
         return;
     }
 
     bytes_read = pd->file->read(file, g_state.disk.data, sizeof(g_state.disk.data));
+    if (bytes_read < 0) {
+        log_file_error("read", g_state.disk_path, pd->file->geterr());
+    }
     if (bytes_read > 0) {
         g_state.disk.size = (uint16_t)bytes_read;
     }
@@ -741,10 +1089,18 @@ flush_disk_if_needed(bool force)
         return true;
     }
 
-    pd->file->mkdir("save");
+    if (pd->file->mkdir("save") != 0) {
+        const char *err = pd->file->geterr();
+        if (err && err[0] != '\0') {
+            log_file_error("mkdir", "save", err);
+        }
+    }
 
     if (g_state.disk.size == 0) {
-        pd->file->unlink(g_state.disk_path, 0);
+        if (pd->file->unlink(g_state.disk_path, 0) != 0) {
+            log_file_error("unlink", g_state.disk_path, pd->file->geterr());
+            return false;
+        }
         g_state.disk_dirty = false;
         g_state.frames_since_disk_write = 0;
         return true;
@@ -752,6 +1108,7 @@ flush_disk_if_needed(bool force)
 
     file = pd->file->open(g_state.disk_path, kFileWrite);
     if (!file) {
+        log_file_error("open", g_state.disk_path, pd->file->geterr());
         set_error("open disk failed for %s: %s", g_state.disk_path,
                   pd->file->geterr());
         return false;
@@ -761,6 +1118,7 @@ flush_disk_if_needed(bool force)
     pd->file->close(file);
 
     if (written != g_state.disk.size) {
+        log_file_error("write", g_state.disk_path, pd->file->geterr());
         set_error("write disk failed for %s", g_state.disk_path);
         return false;
     }
@@ -785,6 +1143,7 @@ read_file_into_memory(const char *path, uint8_t **out_buf, uint32_t *out_size)
     }
 
     if (pd->file->stat(path, &st) != 0) {
+        log_file_error("stat", path, pd->file->geterr());
         set_error("stat failed for %s: %s", path, pd->file->geterr());
         return false;
     }
@@ -804,6 +1163,7 @@ read_file_into_memory(const char *path, uint8_t **out_buf, uint32_t *out_size)
         file = pd->file->open(path, kFileRead);
     }
     if (!file) {
+        log_file_error("open", path, pd->file->geterr());
         set_error("open failed for %s: %s", path, pd->file->geterr());
         return false;
     }
@@ -826,6 +1186,7 @@ read_file_into_memory(const char *path, uint8_t **out_buf, uint32_t *out_size)
     pd->file->close(file);
 
     if (total_read != st.size) {
+        log_file_error("read", path, pd->file->geterr());
         free(buf);
         set_error("read failed for %s (%u/%u)", path, total_read, st.size);
         return false;
@@ -839,8 +1200,18 @@ read_file_into_memory(const char *path, uint8_t **out_buf, uint32_t *out_size)
 static int
 audio_source_callback(void *context, int16_t *left, int16_t *right, int len)
 {
-    static int16_t interleaved[AUDIO_CHUNK_FRAMES * 2];
-    int offset = 0;
+#if WAMR_PD_DISABLE_AUDIO_TICK
+    (void)context;
+
+    if (!left || !right || len <= 0) {
+        return 0;
+    }
+
+    memset(left, 0, sizeof(int16_t) * (size_t)len);
+    memset(right, 0, sizeof(int16_t) * (size_t)len);
+    return 1;
+#else
+    bool output_enabled;
 
     (void)context;
 
@@ -848,30 +1219,9 @@ audio_source_callback(void *context, int16_t *left, int16_t *right, int len)
         return 0;
     }
 
-    if (!g_state.loaded) {
-        memset(left, 0, sizeof(int16_t) * (size_t)len);
-        memset(right, 0, sizeof(int16_t) * (size_t)len);
-        return 1;
-    }
-
-    while (offset < len) {
-        int i;
-        int chunk = len - offset;
-
-        if (chunk > AUDIO_CHUNK_FRAMES) {
-            chunk = AUDIO_CHUNK_FRAMES;
-        }
-
-        w4_apuWriteSamples(interleaved, (unsigned long)chunk);
-        for (i = 0; i < chunk; i++) {
-            left[offset + i] = interleaved[i * 2];
-            right[offset + i] = interleaved[i * 2 + 1];
-        }
-
-        offset += chunk;
-    }
-
-    return 1;
+    output_enabled = g_state.loaded && !g_state.paused;
+    return host_audio_render(left, right, len, output_enabled);
+#endif
 }
 
 static bool
@@ -923,8 +1273,26 @@ cleanup_loaded_module(void)
     g_state.w4_memory_size = 0;
     g_state.w4_mem = NULL;
     g_state.first_frame = false;
+    g_state.framebuffer_clear_needed = true;
 
     g_state.loaded = false;
+    g_state.paused = false;
+    host_audio_set_paused(false);
+    host_audio_reset();
+    if (g_state.button_callback_enabled && pd && pd->system
+        && pd->system->setButtonCallback) {
+        pd->system->setButtonCallback(NULL, NULL, 0);
+    }
+    g_state.button_callback_enabled = false;
+    g_state.last_step_ms = 0.0f;
+    g_state.last_wasm_update_ms = 0.0f;
+    g_state.last_audio_tick_ms = 0.0f;
+    g_state.last_composite_ms = 0.0f;
+    g_state.last_fps = 0.0f;
+    g_state.logic_tick_counter = 0;
+    atomic_store_explicit(&g_state.button_down_mask, 0u, memory_order_relaxed);
+    atomic_store_explicit(&g_state.button_pressed_mask, 0u, memory_order_relaxed);
+    atomic_store_explicit(&g_state.button_released_mask, 0u, memory_order_relaxed);
 }
 
 static bool
@@ -1062,7 +1430,7 @@ host_tone(wasm_exec_env_t exec_env, int32_t frequency, int32_t duration,
           int32_t volume, int32_t flags)
 {
     (void)exec_env;
-    w4_apuTone(frequency, duration, volume, flags);
+    host_audio_tone(frequency, duration, volume, flags);
 }
 
 static int32_t
@@ -1121,7 +1489,7 @@ host_trace(wasm_exec_env_t exec_env, const char *str)
     if (!bounds_check_cstr(exec_env, str)) {
         return;
     }
-    pd->system->logToConsole("[wasm4] %s", str);
+    log_message(W4_LOG_INFO, "%s", str);
 }
 
 static void
@@ -1151,7 +1519,7 @@ host_trace_utf8(wasm_exec_env_t exec_env, const uint8_t *str, int32_t byte_lengt
 
     memcpy(buf, str, (size_t)n);
     buf[n] = '\0';
-    pd->system->logToConsole("[wasm4] %s", buf);
+    log_message(W4_LOG_INFO, "%s", buf);
     free(buf);
 }
 
@@ -1168,7 +1536,7 @@ host_trace_utf16(wasm_exec_env_t exec_env, const uint16_t *str,
         return;
     }
 
-    pd->system->logToConsole("[wasm4] traceUtf16(len=%d)", (int)byte_length);
+    log_message(W4_LOG_INFO, "traceUtf16(len=%d)", (int)byte_length);
 }
 
 static void
@@ -1305,7 +1673,7 @@ host_tracef(wasm_exec_env_t exec_env, const char *fmt, const void *stack)
     }
 
     out[out_len] = '\0';
-    pd->system->logToConsole("[wasm4] %s", out);
+    log_message(W4_LOG_INFO, "%s", out);
 }
 
 static NativeSymbol g_native_symbols[] = {
@@ -1336,10 +1704,80 @@ set_dither_mode(int mode)
     }
 
     g_state.dither_mode = mode;
-    if (g_state.menu_dither_item) {
-        pd->system->setMenuItemValue(g_state.menu_dither_item, mode);
+    return true;
+}
+
+static bool
+set_render_mode(int mode)
+{
+    if (mode < 0 || mode >= W4_RENDER_MODE_COUNT) {
+        return false;
+    }
+
+    if (g_state.render_mode == mode) {
+        return true;
+    }
+
+    g_state.render_mode = mode;
+    g_state.framebuffer_clear_needed = true;
+    if (g_state.menu_render_item) {
+        pd->system->setMenuItemValue(g_state.menu_render_item, mode);
     }
     return true;
+}
+
+static bool
+set_refresh_rate_mode(int mode)
+{
+    float rate;
+
+    if (mode < W4_REFRESH_RATE_30 || mode > W4_REFRESH_RATE_UNCAPPED) {
+        return false;
+    }
+
+    switch (mode) {
+        case W4_REFRESH_RATE_30:
+            rate = 30.0f;
+            break;
+        case W4_REFRESH_RATE_50:
+            rate = 50.0f;
+            break;
+        case W4_REFRESH_RATE_UNCAPPED:
+        default:
+            rate = 0.0f;
+            break;
+    }
+
+    g_state.refresh_rate_mode = mode;
+    g_state.refresh_rate = rate;
+    if (pd && pd->display && pd->display->setRefreshRate) {
+        pd->display->setRefreshRate(rate);
+    }
+    return true;
+}
+
+static int
+on_button_event(PDButtons button, int down, uint32_t when, void *userdata)
+{
+    uint32_t bit = (uint32_t)button;
+
+    (void)when;
+    (void)userdata;
+
+    if (down) {
+        (void)atomic_fetch_or_explicit(&g_state.button_down_mask, bit,
+                                       memory_order_relaxed);
+        (void)atomic_fetch_or_explicit(&g_state.button_pressed_mask, bit,
+                                       memory_order_relaxed);
+    }
+    else {
+        (void)atomic_fetch_and_explicit(&g_state.button_down_mask, ~bit,
+                                        memory_order_relaxed);
+        (void)atomic_fetch_or_explicit(&g_state.button_released_mask, bit,
+                                       memory_order_relaxed);
+    }
+
+    return 0;
 }
 
 static bool
@@ -1352,7 +1790,15 @@ ensure_runtime_initialized(void)
     }
 
     memset(&init_args, 0, sizeof(init_args));
+#if WAMR_PD_USE_POOL_ALLOC
+    memset(g_state.wamr_pool, 0, sizeof(g_state.wamr_pool));
+    init_args.mem_alloc_type = Alloc_With_Pool;
+    init_args.mem_alloc_option.pool.heap_buf = g_state.wamr_pool;
+    init_args.mem_alloc_option.pool.heap_size =
+        (unsigned int)sizeof(g_state.wamr_pool);
+#else
     init_args.mem_alloc_type = Alloc_With_System_Allocator;
+#endif
     init_args.native_module_name = "env";
     init_args.native_symbols = g_native_symbols;
     init_args.n_native_symbols =
@@ -1364,11 +1810,12 @@ ensure_runtime_initialized(void)
     }
 
     g_state.runtime_initialized = true;
+    host_audio_init();
 
     if (!g_state.audio_source) {
         g_state.audio_source = pd->sound->addSource(audio_source_callback, NULL, 1);
         if (!g_state.audio_source) {
-            pd->system->logToConsole("failed to create audio source");
+            log_message(W4_LOG_ERROR, "failed to create audio source");
         }
     }
 
@@ -1376,26 +1823,19 @@ ensure_runtime_initialized(void)
 }
 
 static bool
-load_wasm_cart(const char *path)
+load_module_from_path(const char *module_path, const char *cart_path)
 {
     char error_buf[256] = { 0 };
-    uint32_t start_ms;
-    uint32_t end_ms;
     uint64_t page_count;
     uint64_t bytes_per_page;
     uint64_t mem_size;
-    int idx;
 
-    if (!path || path[0] == '\0') {
-        path = current_cart_path();
+    if (!module_path || module_path[0] == '\0') {
+        set_error("invalid module path");
+        return false;
     }
 
-    cleanup_loaded_module();
-    clear_error();
-
-    start_ms = pd->system->getCurrentTimeMilliseconds();
-
-    if (!read_file_into_memory(path, &g_state.wasm_bytes, &g_state.wasm_size)) {
+    if (!read_file_into_memory(module_path, &g_state.wasm_bytes, &g_state.wasm_size)) {
         return false;
     }
 
@@ -1407,7 +1847,7 @@ load_wasm_cart(const char *path)
     g_state.module = wasm_runtime_load(g_state.wasm_bytes, g_state.wasm_size,
                                        error_buf, sizeof(error_buf));
     if (!g_state.module) {
-        set_error("wasm load failed: %s", error_buf);
+        set_error("module load failed for %s: %s", module_path, error_buf);
         cleanup_loaded_module();
         return false;
     }
@@ -1466,24 +1906,101 @@ load_wasm_cart(const char *path)
     g_state.w4_mem = (W4MemoryMap *)g_state.w4_memory;
 
     init_w4_memory_state();
-    load_disk_for_cart(path);
+    load_disk_for_cart(cart_path ? cart_path : module_path);
+
+    g_state.loaded = true;
+    g_state.paused = false;
+    host_audio_set_paused(false);
+    if (pd->system && pd->system->setButtonCallback) {
+        pd->system->setButtonCallback(on_button_event, NULL, W4_BUTTON_QUEUE_SIZE);
+        g_state.button_callback_enabled = true;
+    }
+    g_state.block_button1_until_release = true;
+    g_state.last_step_ms = 0.0f;
+    g_state.last_wasm_update_ms = 0.0f;
+    g_state.last_audio_tick_ms = 0.0f;
+    g_state.last_composite_ms = 0.0f;
+    g_state.last_fps = 0.0f;
+    g_state.logic_tick_counter = 0;
+    atomic_store_explicit(&g_state.button_pressed_mask, 0u, memory_order_relaxed);
+    atomic_store_explicit(&g_state.button_released_mask, 0u, memory_order_relaxed);
+
+    clear_error();
+    return true;
+}
+
+static bool
+load_wasm_cart(const char *path)
+{
+    const char *primary_path = NULL;
+    const char *fallback_path = NULL;
+    const char *cart_path = NULL;
+    char primary_error[W4_MAX_ERROR_LEN];
+    uint32_t start_ms;
+    uint32_t end_ms;
+    int idx;
+
+    if (!path || path[0] == '\0') {
+        path = current_cart_path();
+    }
 
     idx = find_cart_index(path);
     if (idx >= 0) {
+        CartEntry *entry = &g_state.carts[idx];
+
         g_state.selected_cart = idx;
-        if (g_state.menu_select_item) {
-            pd->system->setMenuItemValue(g_state.menu_select_item, g_state.selected_cart);
+        cart_path = entry->path;
+        if (entry->aot_path[0] != '\0') {
+            primary_path = entry->aot_path;
+            if (entry->wasm_path[0] != '\0') {
+                fallback_path = entry->wasm_path;
+            }
+        }
+        else if (entry->wasm_path[0] != '\0') {
+            primary_path = entry->wasm_path;
         }
     }
 
-    g_state.loaded = true;
-    g_state.block_button1_until_release = true;
+    if (!primary_path) {
+        primary_path = path;
+    }
+    if (!cart_path) {
+        cart_path = path;
+    }
 
+    cleanup_loaded_module();
+    clear_error();
+    primary_error[0] = '\0';
+    start_ms = pd->system->getCurrentTimeMilliseconds();
+
+    if (load_module_from_path(primary_path, cart_path)) {
+        goto done;
+    }
+
+    strncpy(primary_error, g_state.last_error, sizeof(primary_error) - 1);
+    primary_error[sizeof(primary_error) - 1] = '\0';
+
+    if (fallback_path && strcmp(fallback_path, primary_path) != 0) {
+        cleanup_loaded_module();
+        clear_error();
+        if (load_module_from_path(fallback_path, cart_path)) {
+            log_message(W4_LOG_INFO, "AOT load failed for %s, fallback to wasm: %s",
+                        primary_path, primary_error);
+            goto done;
+        }
+        set_error("primary failed: %s; fallback failed: %s", primary_error,
+                  g_state.last_error);
+        cleanup_loaded_module();
+        return false;
+    }
+
+    set_error("%s", primary_error);
+    cleanup_loaded_module();
+    return false;
+
+done:
     end_ms = pd->system->getCurrentTimeMilliseconds();
     g_state.last_load_ms = (float)(end_ms - start_ms);
-    g_state.last_step_ms = 0.0f;
-
-    clear_error();
     return true;
 }
 
@@ -1493,6 +2010,9 @@ update_gamepad_state(void)
     PDButtons current;
     PDButtons pushed;
     PDButtons released;
+    uint32_t cb_current;
+    uint32_t cb_pushed;
+    uint32_t cb_released;
     uint8_t gamepad = 0;
 
     if (!g_state.w4_mem) {
@@ -1500,6 +2020,17 @@ update_gamepad_state(void)
     }
 
     pd->system->getButtonState(&current, &pushed, &released);
+    if (g_state.button_callback_enabled) {
+        cb_current =
+            atomic_load_explicit(&g_state.button_down_mask, memory_order_relaxed);
+        cb_pushed = atomic_exchange_explicit(&g_state.button_pressed_mask, 0u,
+                                             memory_order_relaxed);
+        cb_released = atomic_exchange_explicit(&g_state.button_released_mask, 0u,
+                                               memory_order_relaxed);
+        current = (PDButtons)((uint32_t)current | cb_current);
+        pushed = (PDButtons)((uint32_t)pushed | cb_pushed);
+        released = (PDButtons)((uint32_t)released | cb_released);
+    }
     (void)pushed;
 
     if (g_state.block_button1_until_release) {
@@ -1536,43 +2067,91 @@ update_gamepad_state(void)
 static bool
 step_wasm_cart(void)
 {
+    bool ok = false;
+    bool run_logic;
+    bool did_start = false;
     uint32_t start_ms;
+    uint32_t phase_start_ms;
+    uint32_t phase_end_ms;
     uint32_t end_ms;
 
     if (!g_state.loaded || !g_state.fn_update) {
         set_error("no wasm loaded");
         return false;
     }
+    if (g_state.paused) {
+        g_state.last_wasm_update_ms = 0.0f;
+        g_state.last_audio_tick_ms = 0.0f;
+        g_state.last_composite_ms = 0.0f;
+        g_state.last_step_ms = 0.0f;
+        return true;
+    }
 
     clear_error();
     start_ms = pd->system->getCurrentTimeMilliseconds();
+    g_state.last_wasm_update_ms = 0.0f;
+    g_state.last_audio_tick_ms = 0.0f;
+    g_state.last_composite_ms = 0.0f;
+    phase_start_ms = start_ms;
 
     update_gamepad_state();
+    run_logic = g_state.first_frame
+        || ((g_state.logic_tick_counter % (uint32_t)WAMR_PD_LOGIC_TICK_DIVIDER) == 0u);
 
     if (g_state.first_frame) {
+        did_start = true;
         g_state.first_frame = false;
         if (!call_void_export(g_state.fn_start)) {
-            return false;
+            phase_end_ms = pd->system->getCurrentTimeMilliseconds();
+            g_state.last_wasm_update_ms = (float)(phase_end_ms - phase_start_ms);
+            goto done;
         }
     }
-    else if (!(g_state.w4_mem->systemFlags & W4_SYSTEM_PRESERVE_FRAMEBUFFER)) {
-        w4_framebufferClear();
+
+    if (run_logic) {
+        if (!did_start && !(g_state.w4_mem->systemFlags & W4_SYSTEM_PRESERVE_FRAMEBUFFER)) {
+            w4_framebufferClear();
+        }
+
+        if (!call_void_export(g_state.fn_update)) {
+            phase_end_ms = pd->system->getCurrentTimeMilliseconds();
+            g_state.last_wasm_update_ms = (float)(phase_end_ms - phase_start_ms);
+            goto done;
+        }
+        phase_end_ms = pd->system->getCurrentTimeMilliseconds();
+        g_state.last_wasm_update_ms = (float)(phase_end_ms - phase_start_ms);
+    }
+    else {
+        phase_end_ms = pd->system->getCurrentTimeMilliseconds();
+        g_state.last_wasm_update_ms = 0.0f;
     }
 
-    if (!call_void_export(g_state.fn_update)) {
-        return false;
-    }
+    phase_start_ms = phase_end_ms;
+#if !WAMR_PD_DISABLE_AUDIO_TICK
+    host_audio_tick();
+#endif
+    phase_end_ms = pd->system->getCurrentTimeMilliseconds();
+    g_state.last_audio_tick_ms = (float)(phase_end_ms - phase_start_ms);
 
-    w4_apuTick();
+    phase_start_ms = phase_end_ms;
     composite_to_playdate_framebuffer();
+    phase_end_ms = pd->system->getCurrentTimeMilliseconds();
+    g_state.last_composite_ms = (float)(phase_end_ms - phase_start_ms);
 
     g_state.frames_since_disk_write++;
+    g_state.logic_tick_counter++;
     (void)flush_disk_if_needed(false);
 
+    ok = true;
+
+done:
     end_ms = pd->system->getCurrentTimeMilliseconds();
     g_state.last_step_ms = (float)(end_ms - start_ms);
+    if (pd->display && pd->display->getFPS) {
+        g_state.last_fps = pd->display->getFPS();
+    }
 
-    return true;
+    return ok;
 }
 
 static int
@@ -1661,6 +2240,77 @@ lua_wamr_get_dither_mode(lua_State *L)
 }
 
 static int
+lua_wamr_set_log_level(lua_State *L)
+{
+    int level;
+
+    (void)L;
+
+    if (pd->lua->getArgCount() < 1) {
+        pd->lua->pushBool(0);
+        pd->lua->pushString("missing level");
+        return 2;
+    }
+
+    level = pd->lua->getArgInt(1);
+    if (level < W4_LOG_ERROR || level > W4_LOG_DEBUG) {
+        pd->lua->pushBool(0);
+        pd->lua->pushString("invalid level (0:error,1:info,2:debug)");
+        return 2;
+    }
+
+    g_state.log_level = level;
+    pd->lua->pushBool(1);
+    pd->lua->pushNil();
+    return 2;
+}
+
+static int
+lua_wamr_set_refresh_rate(lua_State *L)
+{
+    int mode;
+
+    (void)L;
+
+    if (pd->lua->getArgCount() < 1) {
+        pd->lua->pushBool(0);
+        pd->lua->pushString("missing mode");
+        return 2;
+    }
+
+    mode = pd->lua->getArgInt(1);
+    if (!set_refresh_rate_mode(mode)) {
+        pd->lua->pushBool(0);
+        pd->lua->pushString("invalid mode (0:30fps,1:50fps,2:uncapped)");
+        return 2;
+    }
+
+    pd->lua->pushBool(1);
+    pd->lua->pushFloat(g_state.refresh_rate);
+    return 2;
+}
+
+static int
+lua_wamr_get_fps_raw(lua_State *L)
+{
+    float fps = g_state.last_fps;
+    float refresh = g_state.refresh_rate;
+
+    (void)L;
+
+    if (pd->display && pd->display->getFPS) {
+        fps = pd->display->getFPS();
+    }
+    if (pd->display && pd->display->getRefreshRate) {
+        refresh = pd->display->getRefreshRate();
+    }
+
+    pd->lua->pushFloat(fps);
+    pd->lua->pushFloat(refresh);
+    return 2;
+}
+
+static int
 lua_wamr_rescan_carts(lua_State *L)
 {
     char preferred_path[W4_MAX_PATH_LEN];
@@ -1729,9 +2379,6 @@ lua_wamr_select_cart(lua_State *L)
     }
 
     g_state.selected_cart = idx;
-    if (g_state.menu_select_item) {
-        pd->system->setMenuItemValue(g_state.menu_select_item, idx);
-    }
 
     pd->lua->pushBool(1);
     pd->lua->pushString(current_cart_path());
@@ -1758,6 +2405,33 @@ lua_wamr_status_raw(lua_State *L)
     return 5;
 }
 
+static int
+lua_wamr_perf_raw(lua_State *L)
+{
+    (void)L;
+
+    pd->lua->pushFloat(g_state.last_wasm_update_ms);
+    pd->lua->pushFloat(g_state.last_audio_tick_ms);
+    pd->lua->pushFloat(g_state.last_composite_ms);
+    pd->lua->pushFloat(g_state.last_step_ms);
+    pd->lua->pushFloat(g_state.last_load_ms);
+    return 5;
+}
+
+static int
+lua_wamr_runtime_config_raw(lua_State *L)
+{
+    (void)L;
+
+    pd->lua->pushInt(WAMR_PD_LOGIC_TICK_DIVIDER);
+    pd->lua->pushBool(WAMR_PD_DISABLE_AUDIO_TICK);
+    pd->lua->pushInt(WAMR_PD_COMPOSITE_MODE);
+    pd->lua->pushBool(WAMR_PD_ENABLE_AOT);
+    pd->lua->pushString(host_audio_backend_name());
+    pd->lua->pushInt(g_state.refresh_rate_mode);
+    return 6;
+}
+
 void
 wamr_bridge_init(PlaydateAPI *playdate)
 {
@@ -1765,37 +2439,67 @@ wamr_bridge_init(PlaydateAPI *playdate)
 
     pd = playdate;
     memset(&g_state, 0, sizeof(g_state));
+    g_state.log_level = W4_LOG_INFO;
     g_state.selected_cart = 0;
     g_state.dither_mode = W4_DITHER_ORDERED;
+    g_state.render_mode = W4_RENDER_MODE_QUALITY_240;
+    g_state.framebuffer_clear_needed = true;
+    g_state.refresh_rate_mode = W4_REFRESH_RATE_30;
+    g_state.refresh_rate = 30.0f;
+    atomic_store_explicit(&g_state.button_down_mask, 0u, memory_order_relaxed);
+    atomic_store_explicit(&g_state.button_pressed_mask, 0u, memory_order_relaxed);
+    atomic_store_explicit(&g_state.button_released_mask, 0u, memory_order_relaxed);
+
+    (void)set_refresh_rate_mode(g_state.refresh_rate_mode);
+    host_audio_set_paused(false);
+    g_state.button_callback_enabled = false;
 
     refresh_cart_list(current_cart_path());
 
     if (!pd->lua->addFunction(lua_wamr_load, "wamr_load", &err)) {
-        pd->system->logToConsole("addFunction wamr_load failed: %s", err);
+        log_message(W4_LOG_ERROR, "addFunction wamr_load failed: %s", err);
     }
     if (!pd->lua->addFunction(lua_wamr_step, "wamr_step", &err)) {
-        pd->system->logToConsole("addFunction wamr_step failed: %s", err);
+        log_message(W4_LOG_ERROR, "addFunction wamr_step failed: %s", err);
     }
     if (!pd->lua->addFunction(lua_wamr_unload, "wamr_unload", &err)) {
-        pd->system->logToConsole("addFunction wamr_unload failed: %s", err);
+        log_message(W4_LOG_ERROR, "addFunction wamr_unload failed: %s", err);
     }
     if (!pd->lua->addFunction(lua_wamr_status_raw, "wamr_status_raw", &err)) {
-        pd->system->logToConsole("addFunction wamr_status_raw failed: %s", err);
+        log_message(W4_LOG_ERROR, "addFunction wamr_status_raw failed: %s", err);
+    }
+    if (!pd->lua->addFunction(lua_wamr_perf_raw, "wamr_perf_raw", &err)) {
+        log_message(W4_LOG_ERROR, "addFunction wamr_perf_raw failed: %s", err);
+    }
+    if (!pd->lua->addFunction(lua_wamr_runtime_config_raw,
+                              "wamr_runtime_config_raw", &err)) {
+        log_message(W4_LOG_ERROR, "addFunction wamr_runtime_config_raw failed: %s",
+                    err);
     }
     if (!pd->lua->addFunction(lua_wamr_set_dither_mode, "wamr_set_dither_mode", &err)) {
-        pd->system->logToConsole("addFunction wamr_set_dither_mode failed: %s", err);
+        log_message(W4_LOG_ERROR, "addFunction wamr_set_dither_mode failed: %s", err);
     }
     if (!pd->lua->addFunction(lua_wamr_get_dither_mode, "wamr_get_dither_mode", &err)) {
-        pd->system->logToConsole("addFunction wamr_get_dither_mode failed: %s", err);
+        log_message(W4_LOG_ERROR, "addFunction wamr_get_dither_mode failed: %s", err);
+    }
+    if (!pd->lua->addFunction(lua_wamr_set_log_level, "wamr_set_log_level", &err)) {
+        log_message(W4_LOG_ERROR, "addFunction wamr_set_log_level failed: %s", err);
+    }
+    if (!pd->lua->addFunction(lua_wamr_set_refresh_rate, "wamr_set_refresh_rate",
+                              &err)) {
+        log_message(W4_LOG_ERROR, "addFunction wamr_set_refresh_rate failed: %s", err);
+    }
+    if (!pd->lua->addFunction(lua_wamr_get_fps_raw, "wamr_get_fps_raw", &err)) {
+        log_message(W4_LOG_ERROR, "addFunction wamr_get_fps_raw failed: %s", err);
     }
     if (!pd->lua->addFunction(lua_wamr_rescan_carts, "wamr_rescan_carts", &err)) {
-        pd->system->logToConsole("addFunction wamr_rescan_carts failed: %s", err);
+        log_message(W4_LOG_ERROR, "addFunction wamr_rescan_carts failed: %s", err);
     }
     if (!pd->lua->addFunction(lua_wamr_list_carts, "wamr_list_carts", &err)) {
-        pd->system->logToConsole("addFunction wamr_list_carts failed: %s", err);
+        log_message(W4_LOG_ERROR, "addFunction wamr_list_carts failed: %s", err);
     }
     if (!pd->lua->addFunction(lua_wamr_select_cart, "wamr_select_cart", &err)) {
-        pd->system->logToConsole("addFunction wamr_select_cart failed: %s", err);
+        log_message(W4_LOG_ERROR, "addFunction wamr_select_cart failed: %s", err);
     }
 }
 
@@ -1805,13 +2509,44 @@ wamr_bridge_shutdown(void)
     cleanup_loaded_module();
     remove_menu_items();
 
+    if (pd && pd->system && pd->system->setButtonCallback) {
+        pd->system->setButtonCallback(NULL, NULL, 0);
+    }
+
     if (g_state.audio_source) {
         pd->sound->removeSource(g_state.audio_source);
         g_state.audio_source = NULL;
     }
+    host_audio_shutdown();
 
     if (g_state.runtime_initialized) {
         wasm_runtime_destroy();
         g_state.runtime_initialized = false;
     }
+}
+
+void
+wamr_bridge_on_pause(void)
+{
+    g_state.paused = true;
+    host_audio_set_paused(true);
+    atomic_store_explicit(&g_state.button_pressed_mask, 0u, memory_order_relaxed);
+    atomic_store_explicit(&g_state.button_released_mask, 0u, memory_order_relaxed);
+    if (g_state.w4_mem) {
+        g_state.w4_mem->gamepads[0] = 0;
+        g_state.w4_mem->gamepads[1] = 0;
+        g_state.w4_mem->gamepads[2] = 0;
+        g_state.w4_mem->gamepads[3] = 0;
+    }
+    (void)flush_disk_if_needed(true);
+}
+
+void
+wamr_bridge_on_resume(void)
+{
+    g_state.paused = false;
+    g_state.block_button1_until_release = true;
+    host_audio_set_paused(false);
+    atomic_store_explicit(&g_state.button_pressed_mask, 0u, memory_order_relaxed);
+    atomic_store_explicit(&g_state.button_released_mask, 0u, memory_order_relaxed);
 }
