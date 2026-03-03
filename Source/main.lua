@@ -11,6 +11,7 @@ local function loadFont(path, fallback)
 end
 
 local systemFont = gfx.getSystemFont()
+local bundleID = (playdate.metadata and playdate.metadata.bundleID) or "<bundleID>"
 local fonts = {
     title = loadFont("fonts/Roobert-20-Medium", systemFont),
     body = loadFont("fonts/Roobert-11-Medium", systemFont),
@@ -110,7 +111,7 @@ local state = {
     audio_tick_ms = 0,
     composite_ms = 0,
     err = nil,
-    path = "cart/main.wasm",
+    path = "",
     dither_mode = 1,
     logic_divider = 1,
     audio_disabled = false,
@@ -119,7 +120,7 @@ local state = {
     audio_backend = "native",
     refresh_rate_mode = 0,
     carts = {},
-    selected_cart = 1,
+    selected_cart = 0,
     list_top = 1,
 }
 local statusSyncIntervalFrames = 6
@@ -150,6 +151,11 @@ local function clamp(v, lo, hi)
 end
 
 local function ensureVisibleSelection()
+    if #state.carts == 0 then
+        state.list_top = 1
+        return
+    end
+
     if state.selected_cart < state.list_top then
         state.list_top = state.selected_cart
     end
@@ -218,22 +224,25 @@ local function refreshCartList()
         end
     end
 
-    if #carts == 0 then
-        carts = {
-            {
-                path = "cart/main.wasm",
-                has_aot = cartHasAot("cart/main.wasm"),
-            },
-        }
+    state.carts = carts
+    if #state.carts == 0 then
+        state.selected_cart = 0
+        state.path = ""
+        state.list_top = 1
+        return
     end
 
-    state.carts = carts
     state.selected_cart = clamp((selectedIndex or 0) + 1, 1, #state.carts)
     state.path = state.carts[state.selected_cart].path
     ensureVisibleSelection()
 end
 
 local function applySelectedCart()
+    if state.selected_cart < 1 or state.selected_cart > #state.carts then
+        state.path = ""
+        return
+    end
+
     local ok, pathOrErr = wamr.selectCart(state.selected_cart - 1)
     if ok then
         state.path = pathOrErr
@@ -271,6 +280,13 @@ local function changeDither(delta)
 end
 
 local function loadSelectedCart()
+    if #state.carts == 0 or state.path == nil or state.path == "" then
+        state.loaded = false
+        state.load_ms = 0
+        state.err = string.format("No carts found. Add .wasm/.aot to Data/%s/cart", bundleID)
+        return
+    end
+
     local ok, load_ms, err = wamr.load(state.path)
     state.loaded = ok
     state.load_ms = load_ms
@@ -301,6 +317,17 @@ local function drawCartridgeList()
 
     gfx.setFont(fonts.body)
     gfx.drawRect(LIST_X, LIST_Y, LIST_W, LIST_H)
+
+    if #state.carts == 0 then
+        gfx.setFont(fonts.mono)
+        gfx.drawTextAligned("No cartridges in Data/cart", LIST_X + LIST_W / 2, LIST_Y + 48, kTextAlignment.center)
+        gfx.drawTextAligned(
+            string.format("Copy .wasm/.aot to Data/%s/cart", bundleID),
+            LIST_X + LIST_W / 2,
+            LIST_Y + 68,
+            kTextAlignment.center
+        )
+    end
 
     for i = 0, VISIBLE_ROWS - 1 do
         local idx = state.list_top + i
@@ -333,7 +360,7 @@ local function drawCartridgeList()
 
     gfx.setFont(fonts.mono)
     gfx.drawText(
-        string.format("Carts %d  Selected %d/%d", #state.carts, state.selected_cart, #state.carts),
+        string.format("Carts %d  Selected %d/%d", #state.carts, (#state.carts == 0) and 0 or state.selected_cart, #state.carts),
         LIST_X + 4 , LIST_Y + LIST_H + 2
     )
 end
@@ -342,7 +369,11 @@ local function drawFooter()
     gfx.drawLine(16, 204, 384, 204)
     gfx.setFont(fonts.mono)
 
-    gfx.drawText("UP/DOWN Select       Ⓐ Run Ⓑ Rescan", 22, 210)
+    if #state.carts == 0 then
+        gfx.drawText("No carts loaded       Ⓑ Rescan", 22, 210)
+    else
+        gfx.drawText("UP/DOWN Select       Ⓐ Run Ⓑ Rescan", 22, 210)
+    end
     gfx.drawText("LEFT/RIGHT Dither", 22, 224)
 end
 

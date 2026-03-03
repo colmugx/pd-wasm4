@@ -18,6 +18,25 @@ pd_realloc(void *ptr, size_t size)
     return g_playdate_api->system->realloc(ptr, size);
 }
 
+static void
+pd_log_console(const char *message)
+{
+    if (g_playdate_api && g_playdate_api->system
+        && g_playdate_api->system->logToConsole) {
+        g_playdate_api->system->logToConsole("%s", message);
+    }
+}
+
+static int
+pd_format_and_log(const char *format, va_list ap)
+{
+    char buffer[256];
+    int ret = vsnprintf(buffer, sizeof(buffer), format, ap);
+
+    pd_log_console(buffer);
+    return ret;
+}
+
 int
 bh_platform_init(void)
 {
@@ -49,18 +68,12 @@ os_free(void *ptr)
 int
 os_printf(const char *format, ...)
 {
-    char buffer[256];
-    int ret = 0;
+    int ret;
     va_list ap;
 
     va_start(ap, format);
-    ret = vsnprintf(buffer, sizeof(buffer), format, ap);
+    ret = pd_format_and_log(format, ap);
     va_end(ap);
-
-    if (g_playdate_api && g_playdate_api->system
-        && g_playdate_api->system->logToConsole) {
-        g_playdate_api->system->logToConsole("%s", buffer);
-    }
 
     return ret;
 }
@@ -68,13 +81,7 @@ os_printf(const char *format, ...)
 int
 os_vprintf(const char *format, va_list ap)
 {
-    char buffer[256];
-    int ret = vsnprintf(buffer, sizeof(buffer), format, ap);
-    if (g_playdate_api && g_playdate_api->system
-        && g_playdate_api->system->logToConsole) {
-        g_playdate_api->system->logToConsole("%s", buffer);
-    }
-    return ret;
+    return pd_format_and_log(format, ap);
 }
 
 static uint64

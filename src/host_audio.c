@@ -19,18 +19,30 @@
 
 static bool g_paused;
 
-void
-host_audio_init(void)
+static void
+host_audio_silence(int16_t *left, int16_t *right, int len)
+{
+    memset(left, 0, sizeof(int16_t) * (size_t)len);
+    memset(right, 0, sizeof(int16_t) * (size_t)len);
+}
+
+static void
+host_audio_reset_state(void)
 {
     g_paused = false;
     w4_apuInit();
 }
 
 void
+host_audio_init(void)
+{
+    host_audio_reset_state();
+}
+
+void
 host_audio_reset(void)
 {
-    g_paused = false;
-    w4_apuInit();
+    host_audio_reset_state();
 }
 
 void
@@ -72,8 +84,7 @@ host_audio_render(int16_t *left, int16_t *right, int len, bool output_enabled)
     }
 
     if (!output_enabled || g_paused) {
-        memset(left, 0, sizeof(int16_t) * (size_t)len);
-        memset(right, 0, sizeof(int16_t) * (size_t)len);
+        host_audio_silence(left, right, len);
         return 1;
     }
 
@@ -153,6 +164,13 @@ typedef struct HostAudioState {
 } HostAudioState;
 
 static HostAudioState g_audio;
+
+static inline void
+host_audio_silence(int16_t *left, int16_t *right, int len)
+{
+    memset(left, 0, sizeof(int16_t) * (size_t)len);
+    memset(right, 0, sizeof(int16_t) * (size_t)len);
+}
 
 static inline int
 host_min(int a, int b)
@@ -443,8 +461,7 @@ host_audio_render(int16_t *left, int16_t *right, int len, bool output_enabled)
     }
 
     if (!output_enabled || g_audio.paused) {
-        memset(left, 0, sizeof(int16_t) * (size_t)len);
-        memset(right, 0, sizeof(int16_t) * (size_t)len);
+        host_audio_silence(left, right, len);
         return 1;
     }
 
