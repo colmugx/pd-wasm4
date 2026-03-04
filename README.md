@@ -4,13 +4,17 @@ English | [中文](README.zh-CN.md) | [日本語](README.ja.md)
 
 ![Card](Source/launcher/launchImage.png)
 
-[![Only on Playdate](Playdate-badges/Playdate-badge-only-on.svg)](https://play.date/)
+[![Only on Playdate](assets/Playdate-badge-only-on.svg)](https://play.date/)
 
 A Playdate launcher and runtime for running **WASM-4** cartridges with **WAMR**.
 
 - Runtime backend: C11 (`src/`)
 - Launcher app/UI: Lua (`Source/lua/`)
 - Packaging/build: CMake + Playdate SDK
+
+## DEMO
+
+<video src="assets/demo.mp4" controls muted playsinline></video>
 
 ## Highlights
 
@@ -22,7 +26,7 @@ A Playdate launcher and runtime for running **WASM-4** cartridges with **WAMR**.
 
 ## Download
 
-[![Download for Playdate](Playdate-badges/Playdate-badge-download.svg)](https://github.com/colmugx/pd-wasm4/releases)
+[![Download for Playdate](assets/Playdate-badge-download.svg)](https://github.com/colmugx/pd-wasm4/releases)
 
 Get the latest build from GitHub Releases:
 

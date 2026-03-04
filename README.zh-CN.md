@@ -2,13 +2,17 @@
 
 ![Card](Source/launcher/launchImage.png)
 
-[![Only on Playdate](Playdate-badges/Playdate-badge-only-on.svg)](https://play.date/)
+[![Only on Playdate](assets/Playdate-badge-only-on.svg)](https://play.date/)
 
 一个在 Playdate 上运行 **WASM-4** 卡带的启动器与运行时，底层使用 **WAMR**。
 
 - 运行时后端：C11（`src/`）
 - 启动器/UI：Lua（`Source/lua/`）
 - 构建与打包：CMake + Playdate SDK
+
+## 演示
+
+<video src="assets/demo.mp4" controls muted playsinline></video>
 
 ## 特性
 
@@ -20,7 +24,7 @@
 
 ## 下载
 
-[![Download for Playdate](Playdate-badges/Playdate-badge-download.svg)](https://github.com/colmugx/pd-wasm4/releases)
+[![Download for Playdate](assets/Playdate-badge-download.svg)](https://github.com/colmugx/pd-wasm4/releases)
 
 从 GitHub Releases 下载最新构建：
 

@@ -2,13 +2,17 @@
 
 ![Card](Source/launcher/launchImage.png)
 
-[![Only on Playdate](Playdate-badges/Playdate-badge-only-on.svg)](https://play.date/)
+[![Only on Playdate](assets/Playdate-badge-only-on.svg)](https://play.date/)
 
 **WAMR** を使って Playdate 上で **WASM-4** カートリッジを実行するランチャー/ランタイムです。
 
 - ランタイムバックエンド: C11（`src/`）
 - ランチャー/UI: Lua（`Source/lua/`）
 - ビルド/パッケージ: CMake + Playdate SDK
+
+## DEMO
+
+<video src="assets/demo.mp4" controls muted playsinline></video>
 
 ## 主な機能
 
@@ -20,7 +24,7 @@
 
 ## ダウンロード
 
-[![Download for Playdate](Playdate-badges/Playdate-badge-download.svg)](https://github.com/colmugx/pd-wasm4/releases)
+[![Download for Playdate](assets/Playdate-badge-download.svg)](https://github.com/colmugx/pd-wasm4/releases)
 
 最新ビルドは GitHub Releases から取得できます。
 
