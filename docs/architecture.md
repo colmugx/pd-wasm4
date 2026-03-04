@@ -33,6 +33,14 @@ The project is organized as a launcher app on Lua and a runtime backend on C.
 - The final Playdate target only provides entrypoint wiring and links `game_backend`.
 - Lua <-> C boundary is isolated in `src/app/lua_bindings.*`; launcher policy/coordination is isolated in `src/app/runtime_service.*`.
 - `game_backend` does not directly own WAMR module/session internals; these are encapsulated in `runtime_session`.
+- Cartridge source of truth is `Data/<bundleID>/cart`.
+
+## Cart List Contract
+
+- `wamr_list_carts` returns `(count, selected_index, joined_paths)`.
+- `joined_paths` is newline-delimited.
+- Each line format is `path<TAB>aot_flag`, where `aot_flag` is `0` or `1`.
+- Lua side should tolerate missing `<TAB>aot_flag` for backward compatibility.
 
 ## Compatibility
 

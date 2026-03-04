@@ -110,10 +110,6 @@ void
 app_runtime_service_list_carts(char *joined, size_t joined_size, int *out_count,
                                int *out_selected_index)
 {
-    if (joined && joined_size > 0) {
-        joined[0] = '\0';
-    }
-
     game_backend_list_carts(joined, joined_size, out_count, out_selected_index);
 }
 

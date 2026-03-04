@@ -8,10 +8,6 @@ function WamrApi.step()
     return wamr_step()
 end
 
-function WamrApi.unload()
-    return wamr_unload()
-end
-
 function WamrApi.status()
     local loaded, load_ms, step_ms, err, path = wamr_status_raw()
     return {
@@ -44,22 +40,6 @@ function WamrApi.runtimeConfig()
         audio_backend = audioBackend or "native",
         refresh_rate_mode = refreshMode or 0,
         debug_output_enabled = debugOutputEnabled and true or false,
-    }
-end
-
-function WamrApi.setLogLevel(level)
-    return wamr_set_log_level(level)
-end
-
-function WamrApi.setRefreshRate(mode)
-    return wamr_set_refresh_rate(mode)
-end
-
-function WamrApi.fpsRaw()
-    local fps, refresh = wamr_get_fps_raw()
-    return {
-        fps = fps or 0,
-        refresh = refresh or 0,
     }
 end
 

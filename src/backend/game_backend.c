@@ -468,15 +468,19 @@ game_backend_list_carts(char *joined, size_t joined_size, int *out_count,
 
     if (joined && joined_size > 1) {
         for (i = 0; i < g_state.cart_count; i++) {
-            const char *path = g_state.carts[i].path;
+            const CartEntry *entry = &g_state.carts[i];
+            const char *path = entry->path;
+            char has_aot = (entry->aot_path[0] != '\0') ? '1' : '0';
             size_t plen = strlen(path);
 
-            if (len + plen + 2 >= joined_size) {
+            if (len + plen + 3 >= joined_size) {
                 break;
             }
 
             memcpy(joined + len, path, plen);
             len += plen;
+            joined[len++] = '\t';
+            joined[len++] = has_aot;
             joined[len++] = '\n';
         }
 

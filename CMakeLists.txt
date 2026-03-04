@@ -262,7 +262,6 @@ if (TOOLCHAIN STREQUAL "armgcc")
         COMMAND ${CMAKE_COMMAND} -E rm -rf ${STAGING_SOURCE_DIR}
         COMMAND ${CMAKE_COMMAND} -E make_directory ${STAGING_SOURCE_DIR}
         COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/Source ${STAGING_SOURCE_DIR}
-        COMMAND ${CMAKE_COMMAND} -E rm -rf ${STAGING_SOURCE_DIR}/cart
         COMMAND ${CMAKE_COMMAND} -E rm -f
             ${STAGING_SOURCE_DIR}/pdex.bin
             ${STAGING_SOURCE_DIR}/pdex.elf
@@ -289,7 +288,6 @@ else()
         COMMAND ${CMAKE_COMMAND} -E rm -rf ${STAGING_SOURCE_DIR}
         COMMAND ${CMAKE_COMMAND} -E make_directory ${STAGING_SOURCE_DIR}
         COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/Source ${STAGING_SOURCE_DIR}
-        COMMAND ${CMAKE_COMMAND} -E rm -rf ${STAGING_SOURCE_DIR}/cart
         COMMAND ${CMAKE_COMMAND} -E rm -f
             ${STAGING_SOURCE_DIR}/pdex.bin
             ${STAGING_SOURCE_DIR}/pdex.elf
