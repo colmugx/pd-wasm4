@@ -99,10 +99,12 @@ local function drawRightPanelDynamic(state, fonts)
     gfx.setColor(gfx.kColorBlack)
     gfx.fillRect(RIGHT_DYNAMIC_X, RIGHT_DYNAMIC_Y, RIGHT_DYNAMIC_W, RIGHT_DYNAMIC_H)
 
+    gfx.setImageDrawMode(gfx.kDrawModeFillWhite)
+    gfx.setFont(fonts.mono)
+    gfx.drawText("FPS", 344, 46)
+    playdate.drawFPS(348, 60)
+
     if state.debug_output_enabled then
-        gfx.setImageDrawMode(gfx.kDrawModeFillWhite)
-        gfx.setFont(fonts.mono)
-        playdate.drawFPS(336, 58)
         gfx.drawText(string.format("W %.2f", state.wasm_update_ms), 328, 82)
         gfx.drawText(string.format("A %.2f", state.audio_tick_ms), 328, 96)
         gfx.drawText(string.format("C %.2f", state.composite_ms), 328, 110)
