@@ -14,7 +14,7 @@ A Playdate launcher and runtime for running **WASM-4** cartridges with **WAMR**.
 
 ## DEMO
 
-<video src="assets/demo.mp4" controls muted playsinline></video>
+![demo](assets/demo.gif)
 
 ## Highlights
 

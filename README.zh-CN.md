@@ -12,7 +12,7 @@
 
 ## 演示
 
-<video src="assets/demo.mp4" controls muted playsinline></video>
+![demo](assets/demo.gif)
 
 ## 特性
 

@@ -12,7 +12,7 @@
 
 ## DEMO
 
-<video src="assets/demo.mp4" controls muted playsinline></video>
+![demo](assets/demo.gif)
 
 ## 主な機能
 
