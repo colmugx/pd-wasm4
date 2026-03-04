@@ -1,6 +1,6 @@
 # PlayDate WASM-4 Launcher
 
-[English](README.md) | [中文](README.zh-CN.md) | [日本語](README.ja.md)
+English | [中文](README.zh-CN.md) | [日本語](README.ja.md)
 
 ![Card](Source/launcher/launchImage.png)
 
