@@ -47,6 +47,7 @@ function RuntimeState.new(bundleID)
         aot_enabled = false,
         audio_backend = "native",
         refresh_rate_mode = 0,
+        debug_output_enabled = false,
         carts = {},
         selected_cart = 0,
         list_top = 1,

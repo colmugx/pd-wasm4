@@ -256,7 +256,8 @@ lua_wamr_runtime_config_raw(lua_State *L)
     pd->lua->pushBool(config.aot_enabled);
     pd->lua->pushString(config.audio_backend ? config.audio_backend : "native");
     pd->lua->pushInt(config.refresh_rate_mode);
-    return 6;
+    pd->lua->pushBool(config.debug_output_enabled);
+    return 7;
 }
 
 void

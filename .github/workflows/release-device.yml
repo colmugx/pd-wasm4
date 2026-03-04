@@ -1,0 +1,81 @@
+name: Release Device Package
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release-device:
+    runs-on: ubuntu-latest
+    env:
+      SDK_VERSION: "3.0.2"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build unzip gcc-arm-none-eabi binutils-arm-none-eabi
+
+      - name: Download Playdate SDK
+        run: |
+          SDK_ZIP="PlaydateSDK-${SDK_VERSION}.zip"
+          curl -fsSL -o "${SDK_ZIP}" "https://download.panic.com/playdate_sdk/${SDK_ZIP}"
+          unzip -q "${SDK_ZIP}" -d "${RUNNER_TEMP}/playdate-sdk"
+          SDK_ROOT="$(find "${RUNNER_TEMP}/playdate-sdk" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+          if [ -z "${SDK_ROOT}" ]; then
+            echo "Failed to locate extracted Playdate SDK directory"
+            exit 1
+          fi
+          echo "PLAYDATE_SDK_PATH=${SDK_ROOT}" >> "${GITHUB_ENV}"
+
+      - name: Align pdxinfo version/buildNumber to tag and build run
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          BUILD_NUM="${GITHUB_RUN_NUMBER}"
+          if [ -z "${VERSION}" ] || [ "${VERSION}" = "${GITHUB_REF_NAME}" ]; then
+            echo "Tag format must be v<version>, got: ${GITHUB_REF_NAME}"
+            exit 1
+          fi
+
+          sed -i.bak -E "s/^version=.*/version=${VERSION}/" Source/pdxinfo
+          sed -i.bak -E "s/^buildNumber=.*/buildNumber=${BUILD_NUM}/" Source/pdxinfo
+          rm -f Source/pdxinfo.bak
+
+          grep -E "^(version|buildNumber)=" Source/pdxinfo
+
+      - name: Configure device build
+        run: |
+          cmake -S . -B build-device -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="${PLAYDATE_SDK_PATH}/C_API/buildsupport/arm.cmake"
+
+      - name: Build device package
+        run: cmake --build build-device --config Release
+
+      - name: Verify package output
+        run: |
+          test -f "./playdate-wasm-4-device.pdx"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: playdate-wasm-4-device-pdx
+          path: ./playdate-wasm-4-device.pdx
+
+      - name: Publish to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if ! gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release create "${TAG}" --title "${TAG}" --generate-notes
+          fi
+          gh release upload "${TAG}" ./playdate-wasm-4-device.pdx --clobber

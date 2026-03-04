@@ -30,6 +30,10 @@
 #define WAMR_PD_ENABLE_AOT 0
 #endif
 
+#ifndef WAMR_PD_ENABLE_DEBUG_OUTPUT
+#define WAMR_PD_ENABLE_DEBUG_OUTPUT 0
+#endif
+
 #ifndef WAMR_PD_POOL_SIZE_BYTES
 #define WAMR_PD_POOL_SIZE_BYTES (256 * 1024)
 #endif
@@ -48,6 +52,10 @@
 
 #if (WAMR_PD_DISABLE_AUDIO_TICK != 0) && (WAMR_PD_DISABLE_AUDIO_TICK != 1)
 #error "WAMR_PD_DISABLE_AUDIO_TICK must be 0 or 1"
+#endif
+
+#if (WAMR_PD_ENABLE_DEBUG_OUTPUT != 0) && (WAMR_PD_ENABLE_DEBUG_OUTPUT != 1)
+#error "WAMR_PD_ENABLE_DEBUG_OUTPUT must be 0 or 1"
 #endif
 
 #if WAMR_PD_POOL_SIZE_BYTES < (128 * 1024)
@@ -125,6 +133,10 @@ copy_cstr_trunc(char *dst, size_t dst_size, const char *src)
 static void
 log_message(int level, const char *fmt, ...)
 {
+#if (WAMR_PD_ENABLE_DEBUG_OUTPUT == 0)
+    (void)level;
+    (void)fmt;
+#else
     va_list args;
     char buf[384];
     const char *level_tag;
@@ -144,6 +156,7 @@ log_message(int level, const char *fmt, ...)
     vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
     pd->system->logToConsole("[wasm4][%s] %s", level_tag, buf);
+#endif
 }
 
 static void
@@ -549,7 +562,8 @@ void
 game_backend_get_runtime_config(int *out_logic_divider, int *out_audio_disabled,
                                 int *out_composite_mode, int *out_aot_enabled,
                                 const char **out_audio_backend,
-                                int *out_refresh_mode)
+                                int *out_refresh_mode,
+                                bool *out_debug_output_enabled)
 {
     if (out_logic_divider) {
         *out_logic_divider = WAMR_PD_LOGIC_TICK_DIVIDER;
@@ -568,6 +582,9 @@ game_backend_get_runtime_config(int *out_logic_divider, int *out_audio_disabled,
     }
     if (out_refresh_mode) {
         *out_refresh_mode = g_state.refresh_rate_mode;
+    }
+    if (out_debug_output_enabled) {
+        *out_debug_output_enabled = (WAMR_PD_ENABLE_DEBUG_OUTPUT != 0);
     }
 }
 

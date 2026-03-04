@@ -16,8 +16,6 @@ local browserCache = {
     path = nil,
     loaded = nil,
     dither_mode = -1,
-    logic_divider = -1,
-    aot_enabled = nil,
 }
 
 local function resetSnapshot()
@@ -28,8 +26,6 @@ local function resetSnapshot()
     browserCache.path = nil
     browserCache.loaded = nil
     browserCache.dither_mode = -1
-    browserCache.logic_divider = -1
-    browserCache.aot_enabled = nil
 end
 
 local function captureSnapshot(state)
@@ -40,8 +36,6 @@ local function captureSnapshot(state)
     browserCache.path = state.path
     browserCache.loaded = state.loaded
     browserCache.dither_mode = state.dither_mode
-    browserCache.logic_divider = state.logic_divider
-    browserCache.aot_enabled = state.aot_enabled
 end
 
 local function needsRedraw(state)
@@ -64,12 +58,6 @@ local function needsRedraw(state)
         return true
     end
     if browserCache.dither_mode ~= state.dither_mode then
-        return true
-    end
-    if browserCache.logic_divider ~= state.logic_divider then
-        return true
-    end
-    if browserCache.aot_enabled ~= state.aot_enabled then
         return true
     end
     return false
@@ -95,12 +83,6 @@ local function canRedrawCursorRowsOnly(state)
         return false
     end
     if browserCache.dither_mode ~= state.dither_mode then
-        return false
-    end
-    if browserCache.logic_divider ~= state.logic_divider then
-        return false
-    end
-    if browserCache.aot_enabled ~= state.aot_enabled then
         return false
     end
     if state.loaded and browserCache.path ~= state.path then
@@ -132,7 +114,6 @@ local function drawTitleAndStatus(state, fonts, ditherNames)
 
     gfx.setFont(fonts.mono)
     gfx.drawText(string.format("Dither: %s", ditherNames[state.dither_mode + 1]), 22, 36)
-    gfx.drawText(RuntimeService.currentModeLabel(state), 150, 36)
 end
 
 local function drawCartridgeList(state, fonts, layout)

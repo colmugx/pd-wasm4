@@ -184,7 +184,8 @@ app_runtime_service_get_runtime_config(AppRuntimeConfig *out_config)
                                     &out_config->composite_mode,
                                     &out_config->aot_enabled,
                                     &out_config->audio_backend,
-                                    &out_config->refresh_rate_mode);
+                                    &out_config->refresh_rate_mode,
+                                    &out_config->debug_output_enabled);
 
     if (!out_config->audio_backend || out_config->audio_backend[0] == '\0') {
         out_config->audio_backend = "native";

@@ -40,6 +40,7 @@ option(WAMR_PD_DISABLE_AUDIO_TICK "Disable audio tick and output for profiling" 
 set(WAMR_PD_COMPOSITE_MODE "0" CACHE STRING "Composite mode (0=normal,1=minimal)")
 set_property(CACHE WAMR_PD_COMPOSITE_MODE PROPERTY STRINGS 0 1)
 option(WAMR_PD_ENABLE_AOT "Enable WAMR AOT support with interpreter fallback" ON)
+option(WAMR_PD_ENABLE_DEBUG_OUTPUT "Enable console logs and debug HUD output" OFF)
 option(WAMR_PD_TRUSTED_CARTS_ONLY "Only run trusted cartridges (required for mini loader experiment)" OFF)
 option(WAMR_PD_ENABLE_MINI_LOADER_EXPERIMENT "Enable WAMR mini loader experiment (trusted carts only)" OFF)
 
@@ -84,6 +85,11 @@ if (WAMR_PD_ENABLE_AOT)
     set(WAMR_PD_ENABLE_AOT_NUM 1)
 else()
     set(WAMR_PD_ENABLE_AOT_NUM 0)
+endif()
+if (WAMR_PD_ENABLE_DEBUG_OUTPUT)
+    set(WAMR_PD_ENABLE_DEBUG_OUTPUT_NUM 1)
+else()
+    set(WAMR_PD_ENABLE_DEBUG_OUTPUT_NUM 0)
 endif()
 if (WAMR_PD_AUDIO_BACKEND STREQUAL "native")
     set(WAMR_PD_AUDIO_BACKEND_NUM 1)
@@ -184,6 +190,7 @@ target_compile_definitions(game_backend PRIVATE
     WAMR_PD_AUDIO_BACKEND=${WAMR_PD_AUDIO_BACKEND_NUM}
     WAMR_PD_COMPOSITE_MODE=${WAMR_PD_COMPOSITE_MODE}
     WAMR_PD_ENABLE_AOT=${WAMR_PD_ENABLE_AOT_NUM}
+    WAMR_PD_ENABLE_DEBUG_OUTPUT=${WAMR_PD_ENABLE_DEBUG_OUTPUT_NUM}
 )
 
 if (TOOLCHAIN STREQUAL "armgcc")

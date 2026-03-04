@@ -66,6 +66,7 @@ void
 game_backend_get_runtime_config(int *out_logic_divider, int *out_audio_disabled,
                                 int *out_composite_mode, int *out_aot_enabled,
                                 const char **out_audio_backend,
-                                int *out_refresh_mode);
+                                int *out_refresh_mode,
+                                bool *out_debug_output_enabled);
 
 #endif

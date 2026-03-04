@@ -25,9 +25,7 @@ local runningHUDCache = {
     initialized = false,
     perf_counter = 0,
     path = nil,
-    logic_divider = nil,
-    audio_disabled = nil,
-    composite_mode = nil,
+    debug_output_enabled = nil,
 }
 
 local function ensureRunningNameImage(state, fonts)
@@ -93,7 +91,6 @@ local function drawRightPanelStatic(fonts)
     gfx.setFont(fonts.mono)
     gfx.drawText("PLAYDATE", 328, 10)
     gfx.drawText("WASM4", 336, 24)
-    gfx.drawText("FPS", 344, 46)
     gfx.setImageDrawMode(gfx.kDrawModeCopy)
 end
 
@@ -102,18 +99,13 @@ local function drawRightPanelDynamic(state, fonts)
     gfx.setColor(gfx.kColorBlack)
     gfx.fillRect(RIGHT_DYNAMIC_X, RIGHT_DYNAMIC_Y, RIGHT_DYNAMIC_W, RIGHT_DYNAMIC_H)
 
-    gfx.setImageDrawMode(gfx.kDrawModeFillWhite)
-    gfx.setFont(fonts.mono)
-    playdate.drawFPS(336, 58)
-    gfx.drawText(string.format("W %.2f", state.wasm_update_ms), 328, 82)
-    gfx.drawText(string.format("A %.2f", state.audio_tick_ms), 328, 96)
-    gfx.drawText(string.format("C %.2f", state.composite_ms), 328, 110)
-    gfx.drawText(string.format("L%d", state.logic_divider), 336, 124)
-    if state.audio_disabled then
-        gfx.drawText("A OFF", 328, 138)
-    end
-    if state.composite_mode == 1 then
-        gfx.drawText("C MIN", 328, 152)
+    if state.debug_output_enabled then
+        gfx.setImageDrawMode(gfx.kDrawModeFillWhite)
+        gfx.setFont(fonts.mono)
+        playdate.drawFPS(336, 58)
+        gfx.drawText(string.format("W %.2f", state.wasm_update_ms), 328, 82)
+        gfx.drawText(string.format("A %.2f", state.audio_tick_ms), 328, 96)
+        gfx.drawText(string.format("C %.2f", state.composite_ms), 328, 110)
     end
     gfx.setImageDrawMode(gfx.kDrawModeCopy)
 end
@@ -122,17 +114,13 @@ function RunningView.invalidateAll()
     runningHUDCache.initialized = false
     runningHUDCache.perf_counter = HUD_PERF_REFRESH_INTERVAL
     runningHUDCache.path = nil
-    runningHUDCache.logic_divider = nil
-    runningHUDCache.audio_disabled = nil
-    runningHUDCache.composite_mode = nil
+    runningHUDCache.debug_output_enabled = nil
 end
 
 function RunningView.updateHUD(state, fonts)
     local needsFull = not runningHUDCache.initialized
     local pathChanged = runningHUDCache.path ~= state.path
-    local runtimeChanged = runningHUDCache.logic_divider ~= state.logic_divider
-        or runningHUDCache.audio_disabled ~= state.audio_disabled
-        or runningHUDCache.composite_mode ~= state.composite_mode
+    local debugChanged = runningHUDCache.debug_output_enabled ~= state.debug_output_enabled
 
     runningHUDCache.perf_counter = runningHUDCache.perf_counter + 1
     local perfTick = runningHUDCache.perf_counter >= HUD_PERF_REFRESH_INTERVAL
@@ -142,17 +130,15 @@ function RunningView.updateHUD(state, fonts)
     if needsFull or pathChanged then
         drawLeftPanel(state, fonts)
     end
-    if needsFull then
+    if needsFull or debugChanged then
         drawRightPanelStatic(fonts)
     end
-    if needsFull or runtimeChanged or perfTick then
+    if needsFull or debugChanged or perfTick then
         drawRightPanelDynamic(state, fonts)
         runningHUDCache.perf_counter = 0
     end
 
     runningHUDCache.initialized = true
     runningHUDCache.path = state.path
-    runningHUDCache.logic_divider = state.logic_divider
-    runningHUDCache.audio_disabled = state.audio_disabled
-    runningHUDCache.composite_mode = state.composite_mode
+    runningHUDCache.debug_output_enabled = state.debug_output_enabled
 end

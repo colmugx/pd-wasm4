@@ -45,6 +45,7 @@
   - Clear behavior summary and motivation.
   - Linked issue (if applicable).
   - Manual test evidence (steps + result); add simulator screenshots for UI/menu changes.
+- AI-authored PRs must follow `docs/ai-pr-code-reading-guidelines.md` before making changes.
 
 ## Post-Refactor Summary (2026-03)
 - Layering is strict: `lua_bindings` only marshals Lua/native values and delegates to `app/runtime_service`.
@@ -53,3 +54,7 @@
 - Treat `wasm-micro-runtime` and `wasm4-core` as dependencies, not extension points for app logic.
 - Cartridge source of truth is `Data/<bundleID>/cart` (`.wasm/.aot`), not `Source/cart`.
 - Avoid "fake layering": no pass-through wrappers that bypass the app/service boundary directly into backend internals.
+
+## AI Code Reading Gate (for PRs)
+- AI contributors must read and follow `docs/ai-pr-code-reading-guidelines.md`.
+- If a PR violates these reading rules (for example, layering assumptions without call-path evidence), it should be considered incomplete.

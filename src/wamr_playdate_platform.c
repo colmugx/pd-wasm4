@@ -6,6 +6,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#ifndef WAMR_PD_ENABLE_DEBUG_OUTPUT
+#define WAMR_PD_ENABLE_DEBUG_OUTPUT 0
+#endif
+
 extern PlaydateAPI *g_playdate_api;
 
 static void *
@@ -21,10 +25,14 @@ pd_realloc(void *ptr, size_t size)
 static void
 pd_log_console(const char *message)
 {
+#if (WAMR_PD_ENABLE_DEBUG_OUTPUT == 0)
+    (void)message;
+#else
     if (g_playdate_api && g_playdate_api->system
         && g_playdate_api->system->logToConsole) {
         g_playdate_api->system->logToConsole("%s", message);
     }
+#endif
 }
 
 static int

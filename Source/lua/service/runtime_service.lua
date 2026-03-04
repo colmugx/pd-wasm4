@@ -26,6 +26,7 @@ function RuntimeService.syncRuntimeConfig(api, state)
     state.aot_enabled = cfg.aot_enabled
     state.audio_backend = cfg.audio_backend
     state.refresh_rate_mode = cfg.refresh_rate_mode
+    state.debug_output_enabled = cfg.debug_output_enabled and true or false
 end
 
 function RuntimeService.changeDither(api, state, delta, ditherNames)
@@ -40,17 +41,12 @@ function RuntimeService.changeDither(api, state, delta, ditherNames)
     end
 end
 
-function RuntimeService.currentModeLabel(state)
-    local aotName = state.aot_enabled and "AOT:on" or "AOT:off"
-    return string.format("L:%d %s", state.logic_divider, aotName)
-end
-
 function RuntimeService.step(api, state)
     local ok, step_ms, err = api.step()
     if ok then
         state.step_ms = step_ms
     else
         state.err = err
-        RuntimeService.syncStatus(api, state, true, true)
+        RuntimeService.syncStatus(api, state, true, state.debug_output_enabled)
     end
 end

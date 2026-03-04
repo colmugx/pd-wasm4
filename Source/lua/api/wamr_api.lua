@@ -35,7 +35,7 @@ function WamrApi.perf()
 end
 
 function WamrApi.runtimeConfig()
-    local logicDivider, audioDisabled, compositeMode, aotEnabled, audioBackend, refreshMode = wamr_runtime_config_raw()
+    local logicDivider, audioDisabled, compositeMode, aotEnabled, audioBackend, refreshMode, debugOutputEnabled = wamr_runtime_config_raw()
     return {
         logic_divider = logicDivider or 1,
         audio_disabled = audioDisabled and true or false,
@@ -43,6 +43,7 @@ function WamrApi.runtimeConfig()
         aot_enabled = aotEnabled and true or false,
         audio_backend = audioBackend or "native",
         refresh_rate_mode = refreshMode or 0,
+        debug_output_enabled = debugOutputEnabled and true or false,
     }
 end
 

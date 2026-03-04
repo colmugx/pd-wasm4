@@ -29,6 +29,7 @@ typedef struct AppRuntimeConfig {
     int aot_enabled;
     const char *audio_backend;
     int refresh_rate_mode;
+    bool debug_output_enabled;
 } AppRuntimeConfig;
 
 bool
