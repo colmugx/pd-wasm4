@@ -216,6 +216,10 @@ target_include_directories(${TARGET_NAME} PRIVATE
 )
 target_link_libraries(${TARGET_NAME} PRIVATE game_backend)
 
+if (TOOLCHAIN STREQUAL "armgcc")
+    target_compile_options(game_backend PRIVATE ${MCFLAGS})
+endif()
+
 if (NOT MSVC)
     target_link_libraries(${TARGET_NAME} PRIVATE m)
 endif()

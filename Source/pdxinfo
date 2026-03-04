@@ -1,5 +1,7 @@
-name=playdate wasm-4
+name=WASM-4 LAUNCHER
 author=colmugx
 description=PLAYDATE WASM-4 cartridge launcher
 bundleID=top.colmugx.wasm4launcher
-imagePath=
+version=1.0
+buildNumber=1
+imagePath=launcher
