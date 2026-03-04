@@ -29,12 +29,18 @@ jobs:
           SDK_ZIP="PlaydateSDK-${SDK_VERSION}.zip"
           curl -fsSL -o "${SDK_ZIP}" "https://download.panic.com/playdate_sdk/${SDK_ZIP}"
           unzip -q "${SDK_ZIP}" -d "${RUNNER_TEMP}/playdate-sdk"
-          SDK_ROOT="$(find "${RUNNER_TEMP}/playdate-sdk" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
-          if [ -z "${SDK_ROOT}" ]; then
-            echo "Failed to locate extracted Playdate SDK directory"
+          SDK_ARM_CMAKE="$(find "${RUNNER_TEMP}/playdate-sdk" -type f -path "*/C_API/buildsupport/arm.cmake" -print -quit)"
+          if [ -z "${SDK_ARM_CMAKE}" ]; then
+            echo "Failed to locate Playdate SDK toolchain file after extraction"
             exit 1
           fi
+          SDK_ROOT="$(cd "$(dirname "${SDK_ARM_CMAKE}")/../.." && pwd)"
           echo "PLAYDATE_SDK_PATH=${SDK_ROOT}" >> "${GITHUB_ENV}"
+
+      - name: Verify toolchain prerequisites
+        run: |
+          command -v ninja >/dev/null
+          test -f "${PLAYDATE_SDK_PATH}/C_API/buildsupport/arm.cmake"
 
       - name: Align pdxinfo version/buildNumber to tag and build run
         run: |
