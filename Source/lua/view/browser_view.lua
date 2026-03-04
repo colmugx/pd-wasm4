@@ -1,6 +1,128 @@
 BrowserView = BrowserView or {}
 
 local gfx = playdate.graphics
+local sprite = gfx.sprite
+
+local browserCache = {
+    background = nil,
+    draw_state = nil,
+    fonts = nil,
+    dither_names = nil,
+    layout = nil,
+    carts_ref = nil,
+    cart_count = -1,
+    selected_cart = -1,
+    list_top = -1,
+    path = nil,
+    loaded = nil,
+    dither_mode = -1,
+    logic_divider = -1,
+    aot_enabled = nil,
+}
+
+local function resetSnapshot()
+    browserCache.carts_ref = nil
+    browserCache.cart_count = -1
+    browserCache.selected_cart = -1
+    browserCache.list_top = -1
+    browserCache.path = nil
+    browserCache.loaded = nil
+    browserCache.dither_mode = -1
+    browserCache.logic_divider = -1
+    browserCache.aot_enabled = nil
+end
+
+local function captureSnapshot(state)
+    browserCache.carts_ref = state.carts
+    browserCache.cart_count = #state.carts
+    browserCache.selected_cart = state.selected_cart
+    browserCache.list_top = state.list_top
+    browserCache.path = state.path
+    browserCache.loaded = state.loaded
+    browserCache.dither_mode = state.dither_mode
+    browserCache.logic_divider = state.logic_divider
+    browserCache.aot_enabled = state.aot_enabled
+end
+
+local function needsRedraw(state)
+    if browserCache.carts_ref ~= state.carts then
+        return true
+    end
+    if browserCache.cart_count ~= #state.carts then
+        return true
+    end
+    if browserCache.selected_cart ~= state.selected_cart then
+        return true
+    end
+    if browserCache.list_top ~= state.list_top then
+        return true
+    end
+    if browserCache.path ~= state.path then
+        return true
+    end
+    if browserCache.loaded ~= state.loaded then
+        return true
+    end
+    if browserCache.dither_mode ~= state.dither_mode then
+        return true
+    end
+    if browserCache.logic_divider ~= state.logic_divider then
+        return true
+    end
+    if browserCache.aot_enabled ~= state.aot_enabled then
+        return true
+    end
+    return false
+end
+
+local function canRedrawCursorRowsOnly(state)
+    if browserCache.selected_cart == -1 then
+        return false
+    end
+    if browserCache.carts_ref ~= state.carts then
+        return false
+    end
+    if browserCache.cart_count ~= #state.carts then
+        return false
+    end
+    if browserCache.list_top ~= state.list_top then
+        return false
+    end
+    if browserCache.selected_cart == state.selected_cart then
+        return false
+    end
+    if browserCache.loaded ~= state.loaded then
+        return false
+    end
+    if browserCache.dither_mode ~= state.dither_mode then
+        return false
+    end
+    if browserCache.logic_divider ~= state.logic_divider then
+        return false
+    end
+    if browserCache.aot_enabled ~= state.aot_enabled then
+        return false
+    end
+    if state.loaded and browserCache.path ~= state.path then
+        return false
+    end
+    return true
+end
+
+local function addRowDirtyRect(layout, listTop, cartIndex)
+    local row = cartIndex - listTop
+    if row < 0 or row >= layout.VISIBLE_ROWS then
+        return
+    end
+
+    local y = layout.LIST_Y + row * layout.ROW_H + 1
+    sprite.addDirtyRect(layout.LIST_X + 1, y, layout.LIST_W - 2, layout.ROW_H - 2)
+end
+
+local function markCursorRowsDirty(layout, oldSelected, newSelected, listTop)
+    addRowDirtyRect(layout, listTop, oldSelected)
+    addRowDirtyRect(layout, listTop, newSelected)
+end
 
 local function drawTitleAndStatus(state, fonts, ditherNames)
     gfx.setFont(fonts.body)
@@ -61,7 +183,7 @@ local function drawCartridgeList(state, fonts, layout)
 
     gfx.setFont(fonts.mono)
     gfx.drawText(
-        string.format("Carts %d  Selected %d/%d", #state.carts, (#state.carts == 0) and 0 or state.selected_cart, #state.carts),
+        string.format("Carts %d", #state.carts),
         layout.LIST_X + 4 , layout.LIST_Y + layout.LIST_H + 2
     )
 end
@@ -78,10 +200,58 @@ local function drawFooter(state, fonts)
     gfx.drawText("LEFT/RIGHT Dither", 22, 224)
 end
 
+local function ensureBackgroundSprite()
+    if browserCache.background ~= nil then
+        return
+    end
+
+    browserCache.background = sprite.setBackgroundDrawingCallback(function(x, y, width, height)
+        local state = browserCache.draw_state
+        local fonts = browserCache.fonts
+        local ditherNames = browserCache.dither_names
+        local layout = browserCache.layout
+        if state == nil or fonts == nil or ditherNames == nil or layout == nil then
+            return
+        end
+
+        gfx.setClipRect(x, y, width, height)
+        gfx.setColor(gfx.kColorWhite)
+        gfx.fillRect(x, y, width, height)
+        gfx.setColor(gfx.kColorBlack)
+        drawTitleAndStatus(state, fonts, ditherNames)
+        drawCartridgeList(state, fonts, layout)
+        drawFooter(state, fonts)
+        gfx.clearClipRect()
+    end)
+end
+
+function BrowserView.deactivate()
+    if browserCache.background ~= nil then
+        browserCache.background:remove()
+        browserCache.background = nil
+    end
+    browserCache.draw_state = nil
+    browserCache.fonts = nil
+    browserCache.dither_names = nil
+    browserCache.layout = nil
+    resetSnapshot()
+end
+
 function BrowserView.draw(state, fonts, ditherNames, layout)
-    gfx.clear(gfx.kColorWhite)
-    drawTitleAndStatus(state, fonts, ditherNames)
-    drawCartridgeList(state, fonts, layout)
-    drawFooter(state, fonts)
-    playdate.drawFPS(336, 2)
+    ensureBackgroundSprite()
+
+    browserCache.draw_state = state
+    browserCache.fonts = fonts
+    browserCache.dither_names = ditherNames
+    browserCache.layout = layout
+
+    if canRedrawCursorRowsOnly(state) then
+        markCursorRowsDirty(layout, browserCache.selected_cart, state.selected_cart, state.list_top)
+        captureSnapshot(state)
+    elseif needsRedraw(state) then
+        captureSnapshot(state)
+        browserCache.background:markDirty()
+    end
+
+    sprite.update()
 end

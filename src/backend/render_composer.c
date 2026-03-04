@@ -160,7 +160,9 @@ build_fast160_nibble_tables(const uint8_t luma[4], uint8_t binary_threshold,
 
 void
 render_composer_composite(PlaydateAPI *pd, W4MemoryMap *w4_mem, int render_mode,
-                          int dither_mode, bool *framebuffer_clear_needed)
+                          int dither_mode, bool *framebuffer_clear_needed,
+                          bool dirty_rows_valid, int dirty_src_row_min,
+                          int dirty_src_row_max)
 {
     uint8_t *frame;
     uint8_t luma[4];
@@ -187,6 +189,9 @@ render_composer_composite(PlaydateAPI *pd, W4MemoryMap *w4_mem, int render_mode,
     get_viewport_rect(render_mode, &viewport_x, &viewport_y, &viewport_size);
 
 #if WAMR_PD_COMPOSITE_MODE == W4_COMPOSITE_MODE_MINIMAL
+    (void)dirty_rows_valid;
+    (void)dirty_src_row_min;
+    (void)dirty_src_row_max;
     if (*framebuffer_clear_needed) {
         int y;
         int left = viewport_x >> 3;
@@ -228,6 +233,21 @@ render_composer_composite(PlaydateAPI *pd, W4MemoryMap *w4_mem, int render_mode,
         uint8_t ordered_nibble[2][256];
         int dst_row_bytes = W4_WIDTH / 8;
         bool cleared = false;
+        int y_start = 0;
+        int y_end = W4_HEIGHT - 1;
+
+        if (dirty_rows_valid) {
+            if (dirty_src_row_min < 0) {
+                dirty_src_row_min = 0;
+            }
+            if (dirty_src_row_max >= W4_HEIGHT) {
+                dirty_src_row_max = W4_HEIGHT - 1;
+            }
+            if (dirty_src_row_max >= dirty_src_row_min) {
+                y_start = dirty_src_row_min;
+                y_end = dirty_src_row_max;
+            }
+        }
 
         build_fast160_nibble_tables(luma, binary_threshold, luma_min, luma_range,
                                     binary_nibble, ordered_nibble);
@@ -241,7 +261,7 @@ render_composer_composite(PlaydateAPI *pd, W4MemoryMap *w4_mem, int render_mode,
             cleared = true;
         }
 
-        for (y = 0; y < W4_HEIGHT; y++) {
+        for (y = y_start; y <= y_end; y++) {
             const uint8_t *src_row = w4_mem->framebuffer + (size_t)y * (W4_WIDTH / 4);
             uint8_t *dst_row = frame + (viewport_y + y) * LCD_ROWSIZE + (viewport_x >> 3);
 
@@ -265,6 +285,9 @@ render_composer_composite(PlaydateAPI *pd, W4MemoryMap *w4_mem, int render_mode,
         if (cleared) {
             pd->graphics->markUpdatedRows(0, LCD_ROWS - 1);
         }
+        else if (y_end >= y_start) {
+            pd->graphics->markUpdatedRows(viewport_y + y_start, viewport_y + y_end);
+        }
         else {
             pd->graphics->markUpdatedRows(viewport_y, viewport_y + W4_HEIGHT - 1);
         }
@@ -281,39 +304,88 @@ render_composer_composite(PlaydateAPI *pd, W4MemoryMap *w4_mem, int render_mode,
         g_src_luma[pixel_index] = luma[color_index];
     }
 
-    for (y = 0; y < viewport_size; y++) {
-        uint16_t src_y = g_scale_y0[y];
-        if (g_scale_yw[y] >= 32768u && g_scale_y1[y] > src_y) {
-            src_y = g_scale_y1[y];
-        }
-        const uint8_t *src_row = g_src_luma + (uint32_t)src_y * W4_WIDTH;
-        uint8_t *row = frame + (viewport_y + y) * LCD_ROWSIZE;
+    {
+        int dst_y_start = 0;
+        int dst_y_end = viewport_size - 1;
 
-        for (x = 0; x < viewport_size; x++) {
-            uint16_t src_x = g_scale_x0[x];
-            if (g_scale_xw[x] >= 32768u && g_scale_x1[x] > src_x) {
-                src_x = g_scale_x1[x];
+        if (dirty_rows_valid) {
+            int src_min = dirty_src_row_min;
+            int src_max = dirty_src_row_max;
+            int min_y = viewport_size;
+            int max_y = -1;
+
+            if (src_min < 0) {
+                src_min = 0;
             }
-            uint8_t sample_luma = src_row[src_x];
-            bool black;
-            uint8_t *byte = row + ((viewport_x + x) >> 3);
-            uint8_t mask = (uint8_t)(0x80u >> ((viewport_x + x) & 7));
+            if (src_max >= W4_HEIGHT) {
+                src_max = W4_HEIGHT - 1;
+            }
+            if (src_min > 0) {
+                src_min -= 1;
+            }
+            if (src_max < W4_HEIGHT - 1) {
+                src_max += 1;
+            }
 
-            if (dither_mode == W4_DITHER_NONE) {
-                black = binary_black[sample_luma] != 0;
+            for (y = 0; y < viewport_size; y++) {
+                uint16_t src_y = g_scale_y0[y];
+                if (g_scale_yw[y] >= 32768u && g_scale_y1[y] > src_y) {
+                    src_y = g_scale_y1[y];
+                }
+                if ((int)src_y >= src_min && (int)src_y <= src_max) {
+                    if (y < min_y) {
+                        min_y = y;
+                    }
+                    if (y > max_y) {
+                        max_y = y;
+                    }
+                }
+            }
+
+            if (max_y >= min_y) {
+                dst_y_start = min_y;
+                dst_y_end = max_y;
             }
             else {
-                int parity = ((y & 1) << 1) | (x & 1);
-                black = ordered_black[parity][sample_luma] != 0;
-            }
-            if (black) {
-                *byte |= mask;
-            }
-            else {
-                *byte &= (uint8_t)~mask;
+                return;
             }
         }
+
+        for (y = dst_y_start; y <= dst_y_end; y++) {
+            uint16_t src_y = g_scale_y0[y];
+            if (g_scale_yw[y] >= 32768u && g_scale_y1[y] > src_y) {
+                src_y = g_scale_y1[y];
+            }
+            const uint8_t *src_row = g_src_luma + (uint32_t)src_y * W4_WIDTH;
+            uint8_t *row = frame + (viewport_y + y) * LCD_ROWSIZE;
+
+            for (x = 0; x < viewport_size; x++) {
+                uint16_t src_x = g_scale_x0[x];
+                if (g_scale_xw[x] >= 32768u && g_scale_x1[x] > src_x) {
+                    src_x = g_scale_x1[x];
+                }
+                uint8_t sample_luma = src_row[src_x];
+                bool black;
+                uint8_t *byte = row + ((viewport_x + x) >> 3);
+                uint8_t mask = (uint8_t)(0x80u >> ((viewport_x + x) & 7));
+
+                if (dither_mode == W4_DITHER_NONE) {
+                    black = binary_black[sample_luma] != 0;
+                }
+                else {
+                    int parity = ((y & 1) << 1) | (x & 1);
+                    black = ordered_black[parity][sample_luma] != 0;
+                }
+                if (black) {
+                    *byte |= mask;
+                }
+                else {
+                    *byte &= (uint8_t)~mask;
+                }
+            }
+        }
+
+        pd->graphics->markUpdatedRows(viewport_y + dst_y_start,
+                                      viewport_y + dst_y_end);
     }
-
-    pd->graphics->markUpdatedRows(viewport_y, viewport_y + viewport_size - 1);
 }

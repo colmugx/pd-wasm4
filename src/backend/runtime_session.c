@@ -22,6 +22,8 @@
 
 #define W4_DISK_FLUSH_INTERVAL_FRAMES 30
 #define W4_BUTTON_QUEUE_SIZE 32
+#define W4_RENDER_MODE_FAST_160 0
+#define W4_DIRTY_ROW_SPAN_LIMIT 112
 
 static void
 copy_cstr_trunc(char *dst, size_t dst_size, const char *src)
@@ -187,6 +189,56 @@ init_w4_memory_state(RuntimeSession *session)
 
     session->first_frame = true;
     session->framebuffer_clear_needed = true;
+    session->prev_w4_framebuffer_valid = false;
+}
+
+static void
+snapshot_w4_framebuffer(RuntimeSession *session)
+{
+    if (!session || !session->w4_mem) {
+        return;
+    }
+
+    memcpy(session->prev_w4_framebuffer, session->w4_mem->framebuffer,
+           W4_FRAMEBUFFER_SIZE);
+    session->prev_w4_framebuffer_valid = true;
+}
+
+static bool
+detect_dirty_row_span(const RuntimeSession *session, int *out_min_row,
+                      int *out_max_row)
+{
+    int y;
+    int min_row = -1;
+    int max_row = -1;
+    const uint8_t *curr;
+    const uint8_t *prev;
+
+    if (!session || !session->w4_mem || !session->prev_w4_framebuffer_valid
+        || !out_min_row || !out_max_row) {
+        return false;
+    }
+
+    curr = session->w4_mem->framebuffer;
+    prev = session->prev_w4_framebuffer;
+
+    for (y = 0; y < W4_HEIGHT; y++) {
+        size_t row_off = (size_t)y * (W4_WIDTH / 4);
+        if (memcmp(curr + row_off, prev + row_off, (size_t)(W4_WIDTH / 4)) != 0) {
+            if (min_row < 0) {
+                min_row = y;
+            }
+            max_row = y;
+        }
+    }
+
+    if (min_row < 0 || max_row < min_row) {
+        return false;
+    }
+
+    *out_min_row = min_row;
+    *out_max_row = max_row;
+    return true;
 }
 
 static void
@@ -388,6 +440,7 @@ cleanup_loaded_module(RuntimeSession *session)
     session->w4_mem = NULL;
     session->first_frame = false;
     session->framebuffer_clear_needed = true;
+    session->prev_w4_framebuffer_valid = false;
 
     session->loaded = false;
     session->paused = false;
@@ -759,6 +812,10 @@ runtime_session_step(RuntimeSession *session, int render_mode, int dither_mode)
     bool ok = false;
     bool run_logic;
     bool did_start = false;
+    bool skip_composite = false;
+    bool dirty_rows_valid = false;
+    int dirty_row_min = 0;
+    int dirty_row_max = 0;
     uint32_t start_ms;
     uint32_t phase_start_ms;
     uint32_t phase_end_ms;
@@ -821,6 +878,25 @@ runtime_session_step(RuntimeSession *session, int render_mode, int dither_mode)
     }
 
     phase_start_ms = phase_end_ms;
+    if (!session->framebuffer_clear_needed && session->prev_w4_framebuffer_valid) {
+        if (!run_logic) {
+            skip_composite = true;
+        }
+        else {
+            bool has_dirty =
+                detect_dirty_row_span(session, &dirty_row_min, &dirty_row_max);
+            if (!has_dirty) {
+                skip_composite = true;
+            }
+            else if (render_mode != W4_RENDER_MODE_FAST_160) {
+                int span = dirty_row_max - dirty_row_min + 1;
+                if (span <= W4_DIRTY_ROW_SPAN_LIMIT) {
+                    dirty_rows_valid = true;
+                }
+            }
+        }
+    }
+
 #if !WAMR_PD_DISABLE_AUDIO_TICK
     host_audio_tick();
 #endif
@@ -828,10 +904,17 @@ runtime_session_step(RuntimeSession *session, int render_mode, int dither_mode)
     session->last_audio_tick_ms = (float)(phase_end_ms - phase_start_ms);
 
     phase_start_ms = phase_end_ms;
-    render_composer_composite(session->pd, session->w4_mem, render_mode, dither_mode,
-                              &session->framebuffer_clear_needed);
+    if (!skip_composite) {
+        render_composer_composite(session->pd, session->w4_mem, render_mode,
+                                  dither_mode, &session->framebuffer_clear_needed,
+                                  dirty_rows_valid, dirty_row_min, dirty_row_max);
+    }
     phase_end_ms = current_time_ms(session);
     session->last_composite_ms = (float)(phase_end_ms - phase_start_ms);
+
+    if (run_logic || !session->prev_w4_framebuffer_valid) {
+        snapshot_w4_framebuffer(session);
+    }
 
     session->frames_since_disk_write++;
     session->logic_tick_counter++;

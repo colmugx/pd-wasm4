@@ -52,6 +52,8 @@ typedef struct RuntimeSession {
     char last_error[RUNTIME_SESSION_MAX_ERROR_LEN];
     bool block_button1_until_release;
     bool framebuffer_clear_needed;
+    bool prev_w4_framebuffer_valid;
+    uint8_t prev_w4_framebuffer[W4_FRAMEBUFFER_SIZE];
     bool paused;
     bool button_callback_enabled;
     atomic_uint_fast32_t button_down_mask;
