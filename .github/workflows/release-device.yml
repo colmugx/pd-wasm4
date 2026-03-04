@@ -62,13 +62,22 @@ jobs:
 
       - name: Verify package output
         run: |
-          test -f "./playdate-wasm-4-device.pdx"
+          test -d "./playdate-wasm-4-device.pdx"
+          test -f "./playdate-wasm-4-device.pdx/pdxinfo"
+
+      - name: Archive package
+        run: |
+          rm -f "./playdate-wasm-4-device.pdx.zip"
+          ditto -c -k --sequesterRsrc --keepParent \
+            "./playdate-wasm-4-device.pdx" \
+            "./playdate-wasm-4-device.pdx.zip"
+          test -f "./playdate-wasm-4-device.pdx.zip"
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: playdate-wasm-4-device-pdx
-          path: ./playdate-wasm-4-device.pdx
+          name: playdate-wasm-4-device-pdx-zip
+          path: ./playdate-wasm-4-device.pdx.zip
 
       - name: Publish to GitHub Release
         env:
@@ -78,4 +87,4 @@ jobs:
           if ! gh release view "${TAG}" >/dev/null 2>&1; then
             gh release create "${TAG}" --title "${TAG}" --generate-notes
           fi
-          gh release upload "${TAG}" ./playdate-wasm-4-device.pdx --clobber
+          gh release upload "${TAG}" ./playdate-wasm-4-device.pdx.zip --clobber
