@@ -29,9 +29,16 @@ jobs:
           SDK_ZIP="PlaydateSDK-${SDK_VERSION}.zip"
           curl -fsSL -o "${SDK_ZIP}" "https://download.panic.com/playdate_sdk/${SDK_ZIP}"
           unzip -q "${SDK_ZIP}" -d "${RUNNER_TEMP}/playdate-sdk"
-          SDK_ARM_CMAKE="$(find "${RUNNER_TEMP}/playdate-sdk" -type f -path "*/C_API/buildsupport/arm.cmake" -print -quit)"
+          SDK_ARM_CMAKE="$(find "${RUNNER_TEMP}/playdate-sdk" \
+            -type d -name "__MACOSX" -prune -o \
+            -type f -path "*/C_API/buildsupport/arm.cmake" -print -quit)"
           if [ -z "${SDK_ARM_CMAKE}" ]; then
             echo "Failed to locate Playdate SDK toolchain file after extraction"
+            echo "SDK zip: ${SDK_ZIP}"
+            echo "Top-level extracted entries:"
+            find "${RUNNER_TEMP}/playdate-sdk" -mindepth 1 -maxdepth 2 -print | sed 's/^/  /'
+            echo "Any arm.cmake found under extraction root:"
+            find "${RUNNER_TEMP}/playdate-sdk" -type f -name "arm.cmake" -print | sed 's/^/  /'
             exit 1
           fi
           SDK_ROOT="$(cd "$(dirname "${SDK_ARM_CMAKE}")/../.." && pwd)"
